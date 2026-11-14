@@ -1,0 +1,145 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--radius-control);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+  isolation: isolate;
+  transition: var(--motion-control);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none !important;
+  translate: none !important;
+  scale: none !important;
+  box-shadow: none !important;
+}
+
+.button:not(:disabled):hover {
+  translate: 0 -2px;
+  scale: 1.02;
+}
+
+.button:not(:disabled):active {
+  translate: 0 0;
+  scale: 0.95;
+  transition-duration: var(--dur-press);
+  transition-timing-function: var(--ease-out);
+}
+
+.button svg {
+  flex: none;
+  shape-rendering: geometricPrecision;
+}
+
+.sm {
+  height: 30px;
+  padding: 0 11px;
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+  gap: 6px;
+}
+
+.md {
+  height: 38px;
+  padding: 0 15px;
+  font-size: var(--text-base);
+  border-radius: var(--radius-control);
+}
+
+.lg {
+  height: 48px;
+  padding: 0 22px;
+  font-size: var(--text-md);
+  border-radius: var(--radius-md);
+}
+
+.primary {
+  color: var(--on-accent);
+  background: var(--play-gradient);
+  border: 1px solid var(--accent-border);
+  box-shadow:
+    inset 0 1px 0 var(--play-highlight),
+    0 4px 14px var(--accent-glow);
+  font-weight: 600;
+}
+
+/*
+ * Gradien tidak bisa diinterpolasi, jadi gradien hover ditempel sebagai
+ * lapisan yang opasitasnya dianimasikan. Hasilnya perubahan warna tetap halus.
+ */
+.primary::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--play-hover-gradient);
+  box-shadow: inset 0 1px 0 var(--play-highlight);
+  opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+
+.primary:not(:disabled):hover::before {
+  opacity: 1;
+}
+
+.primary:not(:disabled):hover {
+  box-shadow:
+    inset 0 1px 0 var(--play-highlight),
+    0 8px 24px var(--accent-glow);
+}
+
+.ghost {
+  background: var(--hover-fill);
+  border: 1px solid var(--glass-border-subtle);
+  color: var(--text-primary);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.ghost:not(:disabled):hover {
+  background: var(--active-fill);
+  border-color: var(--glass-border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.outline {
+  background: var(--glass-fill-subtle);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.outline:not(:disabled):hover {
+  background: var(--hover-fill);
+  border-color: var(--border-strong);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.danger {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  color: var(--danger);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.danger:not(:disabled):hover {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  border-color: var(--danger);
+  color: var(--danger);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}

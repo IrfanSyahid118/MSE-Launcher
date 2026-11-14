@@ -1,0 +1,27 @@
+[package]
+name = "launcher-java"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+launcher-types = { path = "../launcher-types" }
+launcher-platform = { path = "../launcher-platform" }
+launcher-net = { path = "../launcher-net" }
+launcher-download = { path = "../launcher-download" }
+launcher-storage = { path = "../launcher-storage" }
+launcher-security = { path = "../launcher-security" }
+tokio = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dunce = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

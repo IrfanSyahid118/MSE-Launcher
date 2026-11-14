@@ -1,0 +1,818 @@
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use launcher_archive::extract_zip;
+use launcher_download::{DownloadManager, DownloadTask};
+use launcher_net::HttpClient;
+use launcher_platform::DataPaths;
+use launcher_storage::InstancesStore;
+use launcher_types::{
+    ContentProviderId, ContentType, CreateInstanceRequest, ErrorCode, Instance,
+    InstanceContentEntry, LauncherErrorPayload, LoaderSpec, LoaderType,
+};
+use serde::Deserialize;
+
+use crate::curseforge::{
+    get_curseforge_file_with_base, to_content_version as cf_to_version, API_BASE as CF_API_BASE,
+};
+use crate::modrinth::{get_modrinth_version, to_content_version as mr_to_version};
+
+fn is_allowed_mrpack_download_url(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw.trim()) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => matches!(
+            host.as_str(),
+            "cdn.modrinth.com"
+                | "github.com"
+                | "raw.githubusercontent.com"
+                | "objects.githubusercontent.com"
+                | "release-assets.githubusercontent.com"
+                | "gitlab.com"
+                | "bitbucket.org"
+                | "edge.forgecdn.net"
+                | "mediafilez.forgecdn.net"
+        ),
+        #[cfg(any(test, debug_assertions))]
+        "http" => matches!(host.as_str(), "localhost" | "127.0.0.1"),
+        _ => false,
+    }
+}
+
+fn is_valid_sha1_hex(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .is_some_and(|hex| hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthIndexFile {
+    path: String,
+    hashes: HashMap<String, String>,
+    downloads: Vec<String>,
+    #[serde(rename = "fileSize")]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthIndex {
+    name: String,
+    dependencies: HashMap<String, String>,
+    files: Vec<ModrinthIndexFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeManifestLoader {
+    id: String,
+    primary: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeManifestMinecraft {
+    version: String,
+    #[serde(rename = "modLoaders", default)]
+    mod_loaders: Vec<CurseForgeManifestLoader>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeManifestFile {
+    #[serde(rename = "projectID")]
+    project_id: u64,
+    #[serde(rename = "fileID")]
+    file_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeManifest {
+    name: String,
+    minecraft: CurseForgeManifestMinecraft,
+    #[serde(default)]
+    files: Vec<CurseForgeManifestFile>,
+    #[serde(default = "default_overrides")]
+    overrides: String,
+}
+
+fn default_overrides() -> String {
+    "overrides".to_string()
+}
+
+fn parse_loader_from_modrinth(deps: &HashMap<String, String>) -> LoaderSpec {
+    if let Some(v) = deps.get("fabric-loader") {
+        LoaderSpec {
+            loader_type: LoaderType::Fabric,
+            version: Some(v.clone()),
+        }
+    } else if let Some(v) = deps.get("quilt-loader") {
+        LoaderSpec {
+            loader_type: LoaderType::Quilt,
+            version: Some(v.clone()),
+        }
+    } else if let Some(v) = deps.get("neoforge") {
+        LoaderSpec {
+            loader_type: LoaderType::Neoforge,
+            version: Some(v.clone()),
+        }
+    } else if let Some(v) = deps.get("forge") {
+        LoaderSpec {
+            loader_type: LoaderType::Forge,
+            version: Some(v.clone()),
+        }
+    } else {
+        LoaderSpec {
+            loader_type: LoaderType::Vanilla,
+            version: None,
+        }
+    }
+}
+
+fn parse_loader_from_curseforge(loader_str: &str) -> LoaderSpec {
+    let lower = loader_str.to_lowercase();
+    if let Some((kind, ver)) = lower.split_once('-') {
+        let loader_type = match kind {
+            "fabric" => LoaderType::Fabric,
+            "quilt" => LoaderType::Quilt,
+            "neoforge" => LoaderType::Neoforge,
+            "forge" => LoaderType::Forge,
+            _ => LoaderType::Vanilla,
+        };
+        LoaderSpec {
+            loader_type,
+            version: Some(ver.to_string()),
+        }
+    } else {
+        LoaderSpec {
+            loader_type: LoaderType::Vanilla,
+            version: None,
+        }
+    }
+}
+
+fn read_zip_text(
+    zip_path: &Path,
+    entry_name: &str,
+) -> Result<Option<String>, LauncherErrorPayload> {
+    let file = File::open(zip_path).map_err(|e| {
+        LauncherErrorPayload::file_system(format!("Gagal membuka arsip modpack: {}", e))
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        LauncherErrorPayload::file_system(format!("Gagal membaca ZIP modpack: {}", e))
+    })?;
+
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|e| {
+            LauncherErrorPayload::file_system(format!("Gagal membaca entry ZIP: {}", e))
+        })?;
+        if entry
+            .name()
+            .is_ok_and(|n| n.eq_ignore_ascii_case(entry_name))
+        {
+            let mut contents = String::new();
+            entry
+                .take(10 * 1024 * 1024)
+                .read_to_string(&mut contents)
+                .map_err(|e| {
+                    LauncherErrorPayload::file_system(format!(
+                        "Gagal membaca teks entry ZIP: {}",
+                        e
+                    ))
+                })?;
+            return Ok(Some(contents));
+        }
+    }
+
+    Ok(None)
+}
+
+fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(dst) {
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Symlink tidak diizinkan pada direktori tujuan modpack",
+            ));
+        }
+    }
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+    let canon_dst = dunce::canonicalize(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Symlink tidak diizinkan dalam folder overrides modpack",
+            ));
+        }
+        let name = entry.file_name();
+        let name_str = name.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Nama berkas overrides bukan UTF-8 yang valid",
+            )
+        })?;
+        launcher_security::validate_single_filename(name_str)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.message))?;
+        let src_child = entry.path();
+        let dst_child = dst.join(name_str);
+        if ft.is_dir() {
+            copy_recursive(&src_child, &dst_child)?;
+        } else if ft.is_file() {
+            if let Ok(existing_meta) = fs::symlink_metadata(&dst_child) {
+                if existing_meta.file_type().is_symlink() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Menimpa symlink pada overrides tidak diizinkan",
+                    ));
+                }
+            }
+            if !dunce::canonicalize(dst)?.starts_with(&canon_dst) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Target salin overrides keluar batas direktori",
+                ));
+            }
+            fs::copy(&src_child, &dst_child)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn safe_modpack_file_path(
+    base_dir: &Path,
+    file_name: &str,
+) -> Result<PathBuf, LauncherErrorPayload> {
+    let clean = launcher_security::validate_single_filename(file_name.trim())?;
+    let resolved = launcher_security::safe_subpath(base_dir, clean)?;
+    if resolved.parent() != Some(base_dir) || resolved.file_name().is_none() {
+        return Err(LauncherErrorPayload::invalid_input(
+            "Nama berkas modpack tidak valid.",
+        ));
+    }
+    Ok(resolved)
+}
+
+fn check_modpack_cancelled(cancel_flag: &AtomicBool) -> Result<(), LauncherErrorPayload> {
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err(LauncherErrorPayload::new(
+            ErrorCode::Cancelled,
+            "Instalasi modpack dibatalkan oleh pengguna.",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn install_modpack<F>(
+    paths: &DataPaths,
+    http: &HttpClient,
+    downloader: &DownloadManager,
+    instances: &InstancesStore,
+    provider: ContentProviderId,
+    version_id: &str,
+    instance_name: Option<&str>,
+    cf_api_key: &str,
+    on_progress: F,
+) -> Result<Instance, LauncherErrorPayload>
+where
+    F: Fn(&str, u32, u32) + Send + Sync + Clone + 'static,
+{
+    install_modpack_with_cancel(
+        paths,
+        http,
+        downloader,
+        instances,
+        provider,
+        version_id,
+        instance_name,
+        cf_api_key,
+        on_progress,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn install_modpack_with_cancel<F>(
+    paths: &DataPaths,
+    http: &HttpClient,
+    downloader: &DownloadManager,
+    instances: &InstancesStore,
+    provider: ContentProviderId,
+    version_id: &str,
+    instance_name: Option<&str>,
+    cf_api_key: &str,
+    on_progress: F,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<Instance, LauncherErrorPayload>
+where
+    F: Fn(&str, u32, u32) + Send + Sync + Clone + 'static,
+{
+    install_modpack_with_base_and_cancel(
+        paths,
+        http,
+        downloader,
+        instances,
+        provider,
+        version_id,
+        instance_name,
+        cf_api_key,
+        CF_API_BASE,
+        on_progress,
+        cancel_flag,
+    )
+    .await
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn install_modpack_with_base<F>(
+    paths: &DataPaths,
+    http: &HttpClient,
+    downloader: &DownloadManager,
+    instances: &InstancesStore,
+    provider: ContentProviderId,
+    version_id: &str,
+    instance_name: Option<&str>,
+    cf_api_key: &str,
+    curseforge_base: &str,
+    on_progress: F,
+) -> Result<Instance, LauncherErrorPayload>
+where
+    F: Fn(&str, u32, u32) + Send + Sync + Clone + 'static,
+{
+    install_modpack_with_base_and_cancel(
+        paths,
+        http,
+        downloader,
+        instances,
+        provider,
+        version_id,
+        instance_name,
+        cf_api_key,
+        curseforge_base,
+        on_progress,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn install_modpack_with_base_and_cancel<F>(
+    paths: &DataPaths,
+    http: &HttpClient,
+    downloader: &DownloadManager,
+    instances: &InstancesStore,
+    provider: ContentProviderId,
+    version_id: &str,
+    instance_name: Option<&str>,
+    cf_api_key: &str,
+    curseforge_base: &str,
+    on_progress: F,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<Instance, LauncherErrorPayload>
+where
+    F: Fn(&str, u32, u32) + Send + Sync + Clone + 'static,
+{
+    check_modpack_cancelled(&cancel_flag)?;
+    on_progress("Menyiapkan folder unduhan modpack...", 1, 3);
+    let staging_id = uuid::Uuid::new_v4().to_string();
+    let staging_dir = paths.cache_dir.join("modpack-staging").join(&staging_id);
+    fs::create_dir_all(&staging_dir).map_err(|e| {
+        LauncherErrorPayload::file_system(format!("Gagal membuat folder staging: {}", e))
+    })?;
+
+    let meta_res: Result<(String, Option<String>, String), LauncherErrorPayload> = async {
+        check_modpack_cancelled(&cancel_flag)?;
+        match provider {
+            ContentProviderId::Modrinth => {
+                let detail = get_modrinth_version(http, version_id).await?;
+                let cv = mr_to_version(&detail)?;
+                let url = cv.download_url.ok_or_else(|| {
+                    LauncherErrorPayload::invalid_input(
+                        "Modpack Modrinth tidak memiliki URL unduhan.",
+                    )
+                })?;
+                Ok((url, cv.sha1, cv.file_name))
+            }
+            ContentProviderId::Curseforge => {
+                let (m_str, f_str) = version_id.split_once(':').ok_or_else(|| {
+                    LauncherErrorPayload::invalid_input(
+                        "Format versionId CurseForge harus modId:fileId",
+                    )
+                })?;
+                let m_id = m_str
+                    .parse::<u64>()
+                    .map_err(|_| LauncherErrorPayload::invalid_input("Invalid modId"))?;
+                let f_id = f_str
+                    .parse::<u64>()
+                    .map_err(|_| LauncherErrorPayload::invalid_input("Invalid fileId"))?;
+                let file = get_curseforge_file_with_base(
+                    http,
+                    curseforge_base,
+                    cf_api_key,
+                    &m_id.to_string(),
+                    f_id,
+                )
+                .await?;
+                let cv = cf_to_version(&file);
+                let url = cv.download_url.ok_or_else(|| {
+                    LauncherErrorPayload::distribution_blocked(
+                        "Modpack CurseForge melarang distribusi langsung pihak ketiga.",
+                    )
+                })?;
+                Ok((url, cv.sha1, cv.file_name))
+            }
+        }
+    }
+    .await;
+
+    let (download_url, sha1, file_name) = meta_res.inspect_err(|_| {
+        let _ = fs::remove_dir_all(&staging_dir);
+    })?;
+
+    let modpack_archive_path =
+        safe_modpack_file_path(&staging_dir, &file_name).inspect_err(|_| {
+            let _ = fs::remove_dir_all(&staging_dir);
+        })?;
+
+    // Download modpack archive
+    on_progress("Mengunduh arsip modpack...", 1, 3);
+    let on_p_arch = on_progress.clone();
+    if let Err(e) = downloader
+        .download_all(
+            vec![DownloadTask {
+                url: download_url,
+                destination: modpack_archive_path.clone(),
+                expected_sha1: sha1,
+                expected_sha256: None,
+                expected_size: None,
+            }],
+            move |_| {
+                on_p_arch("Mengunduh arsip modpack...", 1, 3);
+            },
+            Arc::clone(&cancel_flag),
+        )
+        .await
+    {
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(if cancel_flag.load(Ordering::Relaxed) {
+            LauncherErrorPayload::new(
+                ErrorCode::Cancelled,
+                "Instalasi modpack dibatalkan oleh pengguna.",
+            )
+        } else {
+            e
+        });
+    }
+
+    if let Err(e) = check_modpack_cancelled(&cancel_flag) {
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(e);
+    }
+
+    let modrinth_text = read_zip_text(&modpack_archive_path, "modrinth.index.json")?;
+    let curseforge_text = read_zip_text(&modpack_archive_path, "manifest.json")?;
+
+    if modrinth_text.is_none() && curseforge_text.is_none() {
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(LauncherErrorPayload::invalid_input(
+            "Berkas bukan arsip modpack yang valid (tidak ditemukan modrinth.index.json atau manifest.json).",
+        ));
+    }
+
+    on_progress("Mengekstrak dan memproses struktur modpack...", 2, 3);
+    let unpacked_dir = staging_dir.join("unpacked");
+    extract_zip(&modpack_archive_path, &unpacked_dir, &[])?;
+
+    let (mut instance, download_items, content_entries, overrides_dir) = if let Some(m_json) =
+        modrinth_text
+    {
+        let index: ModrinthIndex = serde_json::from_str(&m_json).map_err(|e| {
+            LauncherErrorPayload::invalid_input(format!("Format modrinth.index.json rusak: {}", e))
+        })?;
+
+        let name = instance_name.unwrap_or(&index.name).trim();
+        let minecraft_version = index
+            .dependencies
+            .get("minecraft")
+            .cloned()
+            .ok_or_else(|| {
+                LauncherErrorPayload::invalid_input("Versi Minecraft tidak ditemukan pada modpack.")
+            })?;
+        let loader = parse_loader_from_modrinth(&index.dependencies);
+
+        let new_inst = instances.create(CreateInstanceRequest {
+            name: name.to_string(),
+            minecraft_version,
+            loader,
+        })?;
+
+        let mc_dir = paths.instances_dir.join(&new_inst.id).join("minecraft");
+        let mut items = Vec::new();
+        let mut entries = Vec::new();
+
+        for f in index.files {
+            if let Some(url) = f.downloads.first() {
+                if !is_allowed_mrpack_download_url(url) {
+                    let _ = instances.remove(&new_inst.id);
+                    let _ = launcher_security::safe_remove_dir_all_within(
+                        &paths.instances_dir,
+                        &paths.instances_dir.join(&new_inst.id),
+                    );
+                    let _ =
+                        launcher_security::safe_remove_dir_all_within(&paths.root, &staging_dir);
+                    return Err(LauncherErrorPayload::invalid_input(format!(
+                        "Domain URL unduhan modpack tidak diizinkan untuk '{}'",
+                        f.path
+                    )));
+                }
+                let sha1 = f.hashes.get("sha1").map(|s| s.trim().to_string());
+                if !is_valid_sha1_hex(sha1.as_deref()) {
+                    let _ = instances.remove(&new_inst.id);
+                    let _ = launcher_security::safe_remove_dir_all_within(
+                        &paths.instances_dir,
+                        &paths.instances_dir.join(&new_inst.id),
+                    );
+                    let _ =
+                        launcher_security::safe_remove_dir_all_within(&paths.root, &staging_dir);
+                    return Err(LauncherErrorPayload::invalid_input(format!(
+                        "Checksum SHA-1 wajib tersedia pada file modpack '{}'",
+                        f.path
+                    )));
+                }
+                // SEC-01 & SC-09: Validasi path relatif modpack untuk mencegah arbitrary file write
+                let dest = launcher_security::safe_subpath(&mc_dir, &f.path).map_err(|_| {
+                    let _ = instances.remove(&new_inst.id);
+                    let _ = launcher_security::safe_remove_dir_all_within(
+                        &paths.instances_dir,
+                        &paths.instances_dir.join(&new_inst.id),
+                    );
+                    let _ =
+                        launcher_security::safe_remove_dir_all_within(&paths.root, &staging_dir);
+                    LauncherErrorPayload::invalid_input(format!(
+                        "Path berkas berbahaya dalam modpack terdeteksi: '{}'",
+                        f.path
+                    ))
+                })?;
+                items.push(DownloadTask {
+                    url: url.clone(),
+                    destination: dest,
+                    expected_sha1: sha1.clone(),
+                    expected_sha256: None,
+                    expected_size: f.file_size,
+                });
+
+                entries.push(InstanceContentEntry {
+                    provider: ContentProviderId::Modrinth,
+                    project_id: f.path.clone(),
+                    version_id: f.path.clone(),
+                    content_type: if f.path.starts_with("mods/") {
+                        ContentType::Mod
+                    } else if f.path.starts_with("resourcepacks/") {
+                        ContentType::Resourcepack
+                    } else if f.path.starts_with("shaderpacks/") {
+                        ContentType::Shader
+                    } else {
+                        ContentType::Mod
+                    },
+                    file_name: Path::new(&f.path)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("file")
+                        .to_string(),
+                    sha1: sha1.unwrap_or_default(),
+                    world_folder: None,
+                    disabled: Some(false),
+                });
+            }
+        }
+
+        (new_inst, items, entries, unpacked_dir.join("overrides"))
+    } else {
+        let c_json = curseforge_text.ok_or_else(|| {
+            LauncherErrorPayload::invalid_input("Manifest CurseForge tidak ditemukan")
+        })?;
+        let manifest: CurseForgeManifest = serde_json::from_str(&c_json).map_err(|e| {
+            LauncherErrorPayload::invalid_input(format!("Format manifest.json rusak: {}", e))
+        })?;
+
+        let name = instance_name.unwrap_or(&manifest.name).trim();
+        let minecraft_version = manifest.minecraft.version.clone();
+        let loader = manifest
+            .minecraft
+            .mod_loaders
+            .iter()
+            .find(|l| l.primary.unwrap_or(false))
+            .or_else(|| manifest.minecraft.mod_loaders.first())
+            .map(|l| parse_loader_from_curseforge(&l.id))
+            .unwrap_or_else(|| LoaderSpec {
+                loader_type: LoaderType::Vanilla,
+                version: None,
+            });
+
+        let new_inst = instances.create(CreateInstanceRequest {
+            name: name.to_string(),
+            minecraft_version,
+            loader,
+        })?;
+
+        let mc_dir = paths.instances_dir.join(&new_inst.id).join("minecraft");
+        let mods_dir = mc_dir.join("mods");
+        let mut items = Vec::new();
+        let mut entries = Vec::new();
+        let mut blocked_mods = Vec::new();
+        let mut failed_mods = Vec::new();
+
+        for file_ref in manifest.files {
+            if let Err(e) = check_modpack_cancelled(&cancel_flag) {
+                let _ = instances.remove(&new_inst.id);
+                let _ = fs::remove_dir_all(paths.instances_dir.join(&new_inst.id));
+                let _ = fs::remove_dir_all(&staging_dir);
+                return Err(e);
+            }
+            match get_curseforge_file_with_base(
+                http,
+                curseforge_base,
+                cf_api_key,
+                &file_ref.project_id.to_string(),
+                file_ref.file_id,
+            )
+            .await
+            {
+                Ok(file_detail) => {
+                    let cv = cf_to_version(&file_detail);
+                    let dl_url = match (file_detail.download_url.as_ref(), cv.download_url) {
+                        (Some(_), Some(url)) => url,
+                        _ => {
+                            blocked_mods.push(format!(
+                                "{} ({}:{})",
+                                cv.file_name, file_ref.project_id, file_ref.file_id
+                            ));
+                            continue;
+                        }
+                    };
+                    let dest =
+                        safe_modpack_file_path(&mods_dir, &cv.file_name).inspect_err(|_| {
+                            let _ = instances.remove(&new_inst.id);
+                            let _ = fs::remove_dir_all(paths.instances_dir.join(&new_inst.id));
+                            let _ = fs::remove_dir_all(&staging_dir);
+                        })?;
+                    items.push(DownloadTask {
+                        url: dl_url,
+                        destination: dest,
+                        expected_sha1: cv.sha1.clone(),
+                        expected_sha256: None,
+                        expected_size: None,
+                    });
+                    entries.push(InstanceContentEntry {
+                        provider: ContentProviderId::Curseforge,
+                        project_id: file_ref.project_id.to_string(),
+                        version_id: format!("{}:{}", file_ref.project_id, file_ref.file_id),
+                        content_type: ContentType::Mod,
+                        file_name: cv.file_name,
+                        sha1: cv.sha1.unwrap_or_default(),
+                        world_folder: None,
+                        disabled: Some(false),
+                    });
+                }
+                Err(e) => {
+                    failed_mods.push(format!(
+                        "{}:{} ({})",
+                        file_ref.project_id, file_ref.file_id, e.message
+                    ));
+                }
+            }
+        }
+
+        if !blocked_mods.is_empty() || !failed_mods.is_empty() {
+            let _ = instances.remove(&new_inst.id);
+            let _ = launcher_security::safe_remove_dir_all_within(
+                &paths.instances_dir,
+                &paths.instances_dir.join(&new_inst.id),
+            );
+            let _ = launcher_security::safe_remove_dir_all_within(&paths.root, &staging_dir);
+            if !blocked_mods.is_empty() {
+                let mut msg = format!(
+                    "Modpack mengandung mod yang diblokir distribusinya oleh CurseForge: {}",
+                    blocked_mods.join(", ")
+                );
+                if !failed_mods.is_empty() {
+                    msg.push_str(&format!(
+                        "; gagal mengambil metadata: {}",
+                        failed_mods.join(", ")
+                    ));
+                }
+                return Err(LauncherErrorPayload::distribution_blocked(msg));
+            }
+            return Err(LauncherErrorPayload::network(format!(
+                "Gagal mengambil metadata mod CurseForge dalam modpack: {}",
+                failed_mods.join(", ")
+            )));
+        }
+
+        let overrides_name = manifest.overrides.trim();
+        let overrides = if overrides_name.is_empty() {
+            unpacked_dir.join("overrides")
+        } else {
+            launcher_security::safe_subpath(&unpacked_dir, overrides_name).map_err(|e| {
+                let _ = instances.remove(&new_inst.id);
+                let _ = launcher_security::safe_remove_dir_all_within(
+                    &paths.instances_dir,
+                    &paths.instances_dir.join(&new_inst.id),
+                );
+                let _ = launcher_security::safe_remove_dir_all_within(&paths.root, &staging_dir);
+                LauncherErrorPayload::invalid_input(format!(
+                    "Path folder overrides tidak valid (SEC-01): {}",
+                    e.message
+                ))
+            })?
+        };
+        (new_inst, items, entries, overrides)
+    };
+
+    let mc_dir =
+        launcher_security::safe_subpath(&paths.instances_dir, &instance.id)?.join("minecraft");
+
+    // Copy overrides folder
+    let copy_res = if overrides_dir.exists() && overrides_dir.is_dir() {
+        launcher_security::ensure_dir_within(&paths.instances_dir, &mc_dir, false).and_then(|_| {
+            copy_recursive(&overrides_dir, &mc_dir).map_err(|e| {
+                LauncherErrorPayload::file_system(format!("Gagal menyalin folder overrides: {}", e))
+            })
+        })
+    } else {
+        Ok(())
+    };
+
+    if let Err(e) = copy_res {
+        let _ = instances.remove(&instance.id);
+        let _ = launcher_security::safe_remove_dir_all_within(
+            &paths.instances_dir,
+            &paths.instances_dir.join(&instance.id),
+        );
+        let _ = launcher_security::safe_remove_dir_all_within(&paths.root, &staging_dir);
+        return Err(e);
+    }
+
+    // Download mod files
+    if !download_items.is_empty() {
+        let total_mods = download_items.len() as u32;
+        let on_p_mods = on_progress.clone();
+        on_progress("Mengunduh berkas mod...", 2, 3);
+
+        if let Err(e) = downloader
+            .download_all(
+                download_items,
+                move |p| {
+                    let msg = if p.total_files > 0 {
+                        format!("Mengunduh mod ({}/{})...", p.completed_files, p.total_files)
+                    } else {
+                        "Mengunduh mod...".to_string()
+                    };
+                    on_p_mods(&msg, p.completed_files as u32, total_mods.max(1));
+                },
+                Arc::clone(&cancel_flag),
+            )
+            .await
+        {
+            // FN-11: Rollback instance on download failure
+            let _ = instances.remove(&instance.id);
+            let _ = fs::remove_dir_all(paths.instances_dir.join(&instance.id));
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(if cancel_flag.load(Ordering::Relaxed) {
+                LauncherErrorPayload::new(
+                    ErrorCode::Cancelled,
+                    "Instalasi modpack dibatalkan oleh pengguna.",
+                )
+            } else {
+                e
+            });
+        }
+    }
+
+    on_progress("Menyelesaikan konfigurasi instance modpack...", 3, 3);
+
+    // Update instance content
+    instance.content = content_entries;
+    if let Err(e) = instances.update(instance.clone()) {
+        let _ = instances.remove(&instance.id);
+        let _ = fs::remove_dir_all(paths.instances_dir.join(&instance.id));
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(e);
+    }
+
+    // Cleanup staging
+    let _ = fs::remove_dir_all(&staging_dir);
+
+    Ok(instance)
+}

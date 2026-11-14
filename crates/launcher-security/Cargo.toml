@@ -1,0 +1,18 @@
+[package]
+name = "launcher-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dunce = { workspace = true }
+launcher-types = { path = "../launcher-types" }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

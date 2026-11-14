@@ -1,0 +1,42 @@
+.spinner {
+  flex: none;
+  animation: spinnerSpin 900ms linear infinite;
+}
+
+@keyframes spinnerSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spinnerPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/*
+ * Rotasi terus-menerus bisa memicu ketidaknyamanan, tetapi spinner membawa
+ * informasi status. Saat gerak dikurangi, rotasi diganti denyut opasitas:
+ * lebih tenang, tetap terbaca sebagai "sedang bekerja".
+ */
+:global([data-motion='reduced']) .spinner {
+  animation-name: spinnerPulse !important;
+  animation-duration: 1.6s !important;
+  animation-iteration-count: infinite !important;
+  animation-timing-function: ease-in-out !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion='full']) .spinner {
+    animation-name: spinnerPulse !important;
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+    animation-timing-function: ease-in-out !important;
+  }
+}

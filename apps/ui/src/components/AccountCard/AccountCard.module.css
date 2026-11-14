@@ -1,0 +1,298 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 18px;
+  border-radius: var(--radius-2xl);
+  background: var(--glass-fill);
+  backdrop-filter: blur(28px) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(28px) saturate(var(--glass-saturation));
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-card);
+  box-sizing: border-box;
+  overflow-y: auto;
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+
+.card:hover {
+  border-color: var(--glass-border-specular);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-raised);
+}
+
+/* 3D Skin Showcase Pedestal */
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 4px;
+}
+
+.skinFrame {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 90px;
+  height: 140px;
+  padding: 8px;
+  flex: none;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border: 1px solid var(--glass-border-subtle);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  box-sizing: border-box;
+  cursor: grab;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.skinFrame:hover {
+  border-color: var(--accent-border);
+}
+
+.skinFrame:active {
+  cursor: grabbing;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.skin3dBadge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  box-shadow: 0 2px 6px var(--accent-glow);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.username {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pillButton {
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.typePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--hover-fill);
+  border: 1px solid var(--glass-border-subtle);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+
+/* Skin Model Switcher Segmented Pills */
+.skinSelector {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  border: 1px solid var(--divider-subtle);
+  width: 100%;
+}
+
+.skinPillBtn {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  outline: none;
+  color: var(--text-tertiary);
+  transition: var(--motion-control);
+}
+
+.skinPillBtn:hover {
+  color: var(--text-primary);
+}
+
+.skinPillBtnActive {
+  color: var(--text-primary);
+}
+
+.skinPillLabel {
+  position: relative;
+  z-index: 1;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.activePill {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  border: 1px solid var(--glass-border-specular);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-sm);
+  z-index: 0;
+}
+
+.uploadLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  transition: var(--motion-control);
+}
+
+.uploadLink:hover {
+  color: var(--accent);
+}
+
+/* Actions Row */
+.accountActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manageBtn {
+  flex: 1;
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset);
+  border: 1px dashed var(--divider);
+  text-align: center;
+}
+
+.emptyHint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+/* System & Launcher Telemetry */
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--divider-subtle);
+}
+
+.summaryTitle {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 2px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+
+.rowLabel {
+  color: var(--text-secondary);
+}
+
+.rowValue {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  text-align: right;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.dotReady {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+
+.dotWait {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.expiredWarning {
+  font-size: 11px;
+  color: var(--danger);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+}

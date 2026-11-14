@@ -1,0 +1,43 @@
+.wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.body {
+  fill: currentColor;
+  opacity: 0.16;
+}
+
+.top {
+  fill: currentColor;
+  opacity: 0.78;
+}
+
+.side {
+  fill: currentColor;
+  opacity: 0.42;
+}
+
+.face {
+  fill: currentColor;
+  opacity: 0.24;
+}
+
+.release {
+  color: var(--accent);
+}
+
+.snapshot {
+  color: var(--text-secondary);
+}
+
+.old_beta {
+  color: var(--warning);
+}
+
+.old_alpha {
+  color: var(--danger);
+}

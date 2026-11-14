@@ -1,0 +1,31 @@
+[package]
+name = "launcher-content"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+launcher-types = { path = "../launcher-types" }
+launcher-platform = { path = "../launcher-platform" }
+launcher-security = { path = "../launcher-security" }
+launcher-storage = { path = "../launcher-storage" }
+launcher-net = { path = "../launcher-net" }
+launcher-download = { path = "../launcher-download" }
+launcher-archive = { path = "../launcher-archive" }
+tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+futures-util = { workspace = true }
+zip = { workspace = true }
+uuid = { workspace = true }
+dunce = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,86 @@
+/*
+ * Liquid Glass Material System — iOS 26 Liquid Glass
+ * Layered surfaces with subtle transparency, backdrop blur, ambient refraction,
+ * and high-precision specular highlights.
+ */
+
+.glass {
+  background: var(--glass-fill);
+  border: 1px solid var(--glass-border);
+  box-shadow: none;
+}
+
+/* Layered Content Panels */
+.glassStrong {
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  box-shadow: none;
+}
+
+/* Sub-panels & Nested Group Insets */
+.glassQuiet {
+  background: var(--surface-inset);
+  border: 1px solid var(--divider-subtle);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* Desktop App Navigation & Header Chrome */
+.glassChrome {
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(28px) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(28px) saturate(var(--glass-saturation));
+  border-color: var(--sidebar-border);
+}
+
+/* Floating Action Bars & Pill Controls */
+.glassFloating {
+  background: var(--glass-fill-strong);
+  backdrop-filter: blur(32px) saturate(180%);
+  -webkit-backdrop-filter: blur(32px) saturate(180%);
+  border: 1px solid var(--glass-border-specular);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    var(--shadow-float);
+}
+
+/* Interactive Control Glass Material */
+.glassControl {
+  background: var(--glass-fill-subtle);
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition: var(--motion-control);
+}
+
+.glassControl:hover {
+  background: var(--hover-fill);
+  border-color: var(--border-strong);
+}
+
+.glassControl:active {
+  background: var(--active-fill);
+  scale: 0.96;
+  transition-duration: var(--dur-press);
+  transition-timing-function: var(--ease-out);
+}
+
+/* Accessibility: Reduced Transparency Support */
+[data-transparency='reduced'] .glass,
+[data-transparency='reduced'] .glassChrome,
+[data-transparency='reduced'] .glassFloating,
+[data-transparency='reduced'] .glassControl {
+  background: var(--glass-fill-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Fallback for environments lacking backdrop-filter */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass,
+  .glassChrome,
+  .glassFloating,
+  .glassControl {
+    background: var(--glass-fill-solid);
+  }
+}

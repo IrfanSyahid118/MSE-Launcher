@@ -1,0 +1,11 @@
+.overlay { position: fixed; inset: 0; z-index: 100; background: rgb(0 0 0 / 56%); }
+.content { position: fixed; z-index: 101; top: min(18vh, 160px); right: 0; left: 0; width: min(560px, calc(100vw - 32px)); margin-inline: auto; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-raised); box-shadow: var(--shadow-float); }
+.title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.searchRow { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--divider); color: var(--text-tertiary); }
+.searchRow input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-size: var(--text-md); }
+kbd { border: 1px solid var(--divider); border-radius: 5px; padding: 1px 5px; color: var(--text-tertiary); font-size: var(--text-xs); }
+.list { display: grid; gap: 4px; padding: 8px; }
+.item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 0 10px; border-radius: var(--radius-sm); color: var(--text-secondary); text-align: left; }
+.item:hover, .item:focus-visible { background: var(--active-fill); color: var(--text-primary); outline: none; }
+.empty { padding: 18px 10px; color: var(--text-tertiary); font-size: var(--text-sm); text-align: center; }
+footer { display: flex; align-items: center; gap: 6px; padding: 10px 16px; border-top: 1px solid var(--divider); color: var(--text-tertiary); font-size: var(--text-xs); }

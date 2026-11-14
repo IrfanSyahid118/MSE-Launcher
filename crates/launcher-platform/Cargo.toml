@@ -1,0 +1,35 @@
+[package]
+name = "launcher-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+launcher-types = { path = "../launcher-types" }
+launcher-security = { path = "../launcher-security" }
+tokio = { workspace = true, features = ["sync", "fs"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fastrand = { workspace = true }
+thiserror = { workspace = true }
+dunce = { workspace = true }
+zeroize = { workspace = true }
+chrono = { workspace = true }
+flate2 = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_System_SystemInformation"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ring = "0.17"
+
+[lints]
+workspace = true

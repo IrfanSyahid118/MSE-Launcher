@@ -1,0 +1,29 @@
+.content {
+  z-index: 80;
+  max-width: 260px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--glass-fill-solid);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: none;
+  animation: hintIn var(--dur-fast) var(--ease-out);
+}
+
+.arrow {
+  fill: var(--glass-fill-solid);
+}
+
+@keyframes hintIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

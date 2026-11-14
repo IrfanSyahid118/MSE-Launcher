@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/*",
+]
+
+[workspace.package]
+version = "1.0.0-beta"
+edition = "2021"
+authors = ["MSE Launcher Contributors"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/IrfanSyahid118/MSE-Launcher"
+
+[workspace.dependencies]
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "sync", "time"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+dunce = "1.0"
+tempfile = "3.17"
+uuid = { version = "1.12", features = ["v4", "v3", "fast-rng"] }
+chrono = { version = "0.4", features = ["serde"] }
+md-5 = "0.10"
+url = "2.5"
+fastrand = "2.3"
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
+flate2 = "1.0"
+futures-util = "0.3"
+regex = "1.11"
+zeroize = { version = "1.8", features = ["derive"] }
+discord-rich-presence = "1.1.0"
+
+[workspace.lints.rust]
+
+[workspace.lints.clippy]
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+let_underscore_future = "deny"
+unused_async = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"

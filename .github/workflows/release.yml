@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag name (e.g. v1.1.0)'
+        required: false
+        type: string
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck TypeScript
+        run: pnpm typecheck
+
+      - name: Build Windows installers and binary
+        env:
+          MCLAUNCHER_DEFAULT_CF_PROXY: ${{ secrets.MCLAUNCHER_DEFAULT_CF_PROXY }}
+        run: pnpm build
+
+      - name: Stage release assets and latest.json
+        id: stage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tauriCfg = Get-Content -Raw 'src-tauri/tauri.conf.json' | ConvertFrom-Json
+          $pkgVersion = [string]$tauriCfg.version
+
+          $tag = '${{ github.ref_name }}'
+          if ('${{ github.ref }}' -notlike 'refs/tags/*') {
+            $inputTag = '${{ inputs.tag }}'
+            if (-not [string]::IsNullOrWhiteSpace($inputTag)) {
+              $tag = $inputTag.Trim()
+            } else {
+              $tag = "v$pkgVersion"
+            }
+          }
+          $releaseVersion = $tag -replace '^[vV]', ''
+
+          $outDir = Join-Path $PWD 'release-assets'
+          if (Test-Path $outDir) {
+            Remove-Item -Recurse -Force $outDir
+          }
+          New-Item -ItemType Directory -Path $outDir | Out-Null
+
+          $nsisFile = Get-ChildItem -Path 'target/release/bundle/nsis' -Filter '*_x64-setup.exe' | Select-Object -First 1
+          $msiFile = Get-ChildItem -Path 'target/release/bundle/msi' -Filter '*_x64_en-US.msi' | Select-Object -First 1
+          $portableSrc = Get-Item 'target/release/minecraft-launcher-desktop.exe'
+
+          if (-not $nsisFile -or -not $msiFile -or -not $portableSrc) {
+            throw 'Expected Tauri build artifacts were not found in target/release.'
+          }
+
+          $nsisName = "MSE.Launcher_${releaseVersion}_x64-setup.exe"
+          $msiName = "MSE.Launcher_${releaseVersion}_x64_en-US.msi"
+          $portableName = "MSE.Launcher_${releaseVersion}_Portable.exe"
+
+          $nsisOut = Join-Path $outDir $nsisName
+          $msiOut = Join-Path $outDir $msiName
+          $portableOut = Join-Path $outDir $portableName
+
+          Copy-Item $nsisFile.FullName $nsisOut -Force
+          Copy-Item $msiFile.FullName $msiOut -Force
+          Copy-Item $portableSrc.FullName $portableOut -Force
+
+          $baseUrl = "https://github.com/${{ github.repository }}/releases/download/$tag"
+          $manifest = [ordered]@{
+            version     = $releaseVersion
+            notes       = "MSE Launcher $releaseVersion"
+            publishedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms   = [ordered]@{
+              'windows-x86_64' = [ordered]@{
+                installer = [ordered]@{
+                  name   = $nsisName
+                  url    = "$baseUrl/$nsisName"
+                  sha256 = (Get-FileHash $nsisOut -Algorithm SHA256).Hash.ToLowerInvariant()
+                  size   = (Get-Item $nsisOut).Length
+                }
+                portable = [ordered]@{
+                  name   = $portableName
+                  url    = "$baseUrl/$portableName"
+                  sha256 = (Get-FileHash $portableOut -Algorithm SHA256).Hash.ToLowerInvariant()
+                  size   = (Get-Item $portableOut).Length
+                }
+                msi = [ordered]@{
+                  name   = $msiName
+                  url    = "$baseUrl/$msiName"
+                  sha256 = (Get-FileHash $msiOut -Algorithm SHA256).Hash.ToLowerInvariant()
+                  size   = (Get-Item $msiOut).Length
+                }
+              }
+            }
+          }
+
+          $latestPath = Join-Path $outDir 'latest.json'
+          $jsonText = $manifest | ConvertTo-Json -Depth 6
+          [System.IO.File]::WriteAllText($latestPath, $jsonText, [System.Text.UTF8Encoding]::new($false))
+
+          $isPrerelease = if ($tag -match '-(alpha|beta|rc)') { 'true' } else { 'false' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$releaseVersion"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$isPrerelease"
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.stage.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.stage.outputs.version }}
+          IS_PRERELEASE: ${{ steps.stage.outputs.prerelease }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $files = @(Get-ChildItem -Path 'release-assets' -File | Select-Object -ExpandProperty FullName)
+          $prevEap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          & gh release view $env:RELEASE_TAG *> $null
+          $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = $prevEap
+
+          if ($exists) {
+            & gh release upload $env:RELEASE_TAG @files --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            $argsList = @('release', 'create', $env:RELEASE_TAG) + $files + @(
+              '--title', "$env:RELEASE_TAG - MSE Launcher $env:RELEASE_VERSION",
+              '--generate-notes'
+            )
+            if ($env:IS_PRERELEASE -eq 'true') {
+              $argsList += '--prerelease'
+            }
+            & gh @argsList
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

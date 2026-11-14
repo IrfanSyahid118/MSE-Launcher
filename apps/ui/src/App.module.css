@@ -1,0 +1,59 @@
+.boot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  padding: 32px;
+  text-align: center;
+}
+
+.mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 68px;
+  height: 68px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.markBody {
+  fill: currentColor;
+  opacity: 0.24;
+}
+
+.markTop {
+  fill: currentColor;
+  opacity: 0.95;
+}
+
+.markSide {
+  fill: currentColor;
+  opacity: 0.5;
+}
+
+.bootTitle {
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.bootText {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.bootError {
+  max-width: 60ch;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}

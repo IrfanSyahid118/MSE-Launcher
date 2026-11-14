@@ -1,0 +1,25 @@
+{
+  "name": "mse-launcher",
+  "version": "1.0.0-beta",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:ui": "pnpm --filter @mc/ui build",
+    "typecheck": "tsc -p packages/shared && tsc -p apps/ui",
+    "cargo:check": "cargo check --workspace",
+    "cargo:test": "cargo test --workspace"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "@types/node": "26.6.6",
+    "prettier": "3.9.10",
+    "typescript": "5.9.3"
+  }
+}

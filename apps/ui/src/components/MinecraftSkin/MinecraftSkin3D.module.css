@@ -1,0 +1,195 @@
+.viewport {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 110px;
+  perspective: 750px;
+  user-select: none;
+  cursor: grab;
+  touch-action: none;
+  overflow: visible;
+}
+
+.dragging {
+  cursor: grabbing;
+}
+
+.scene {
+  position: relative;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+  transition: transform 100ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.characterWrapper {
+  position: relative;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+
+.characterIdle {
+  animation: characterBreathing 4s ease-in-out infinite alternate;
+}
+
+@keyframes characterBreathing {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-4px);
+  }
+}
+
+.shadow {
+  position: absolute;
+  left: -40px;
+  top: 106px;
+  width: 80px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  transform: rotateX(90deg);
+  pointer-events: none;
+}
+
+.cuboid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-style: preserve-3d;
+  transform-origin: center center;
+}
+
+.face {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  backface-visibility: hidden;
+  box-shadow: inset 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.overlayFace {
+  box-shadow: none !important;
+  background-color: transparent !important;
+  pointer-events: none !important;
+}
+
+/* Animasi & Hirarki Bagian Tubuh (Base + Overlay 3D menyatu) */
+.headGroup {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  transform-origin: 0 -36px 0;
+  animation: headBob 4s ease-in-out infinite alternate;
+}
+
+.torsoGroup {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+
+.armRightGroup {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  transform-origin: var(--arm-r-pivot, -36px) -36px 0;
+  animation: armRightSwing 4s ease-in-out infinite alternate;
+}
+
+.armLeftGroup {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  transform-origin: var(--arm-l-pivot, 36px) -36px 0;
+  animation: armLeftSwing 4s ease-in-out infinite alternate;
+}
+
+.legRightGroup {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+
+.legLeftGroup {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+
+@keyframes headBob {
+  0% {
+    transform: rotateY(-3deg) rotateX(2deg);
+  }
+  100% {
+    transform: rotateY(4deg) rotateX(-2deg);
+  }
+}
+
+@keyframes armRightSwing {
+  0% {
+    transform: rotateX(4deg);
+  }
+  100% {
+    transform: rotateX(-4deg);
+  }
+}
+
+@keyframes armLeftSwing {
+  0% {
+    transform: rotateX(-4deg);
+  }
+  100% {
+    transform: rotateX(4deg);
+  }
+}
+
+.loadingSpinner {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 2px solid var(--divider);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+:global([data-motion='reduced']) .characterIdle,
+:global([data-motion='reduced']) .headGroup,
+:global([data-motion='reduced']) .armRightGroup,
+:global([data-motion='reduced']) .armLeftGroup {
+  animation: none !important;
+}

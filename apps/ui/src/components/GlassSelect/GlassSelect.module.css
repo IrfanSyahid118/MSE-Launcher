@@ -1,0 +1,231 @@
+.trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2-5);
+  width: 100%;
+  padding: 8px var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
+  border: 1px solid var(--divider);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  box-sizing: border-box;
+  transition: var(--motion-control);
+}
+
+.trigger:hover {
+  background-color: var(--hover-fill);
+  border-color: var(--border-strong);
+}
+
+.trigger:focus-visible,
+.trigger[data-state='open'] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.trigger[data-disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.triggerValue {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.triggerIcon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+.trigger[data-state='open'] .triggerIcon {
+  transform: rotate(180deg);
+}
+
+/*
+ * Panel mengambang: kaca penuh, bukan isian gelap tetap, supaya tema terang
+ * tidak berubah menjadi kotak hitam.
+ */
+.content {
+  z-index: 80;
+  min-width: var(--radix-select-trigger-width, 220px);
+  max-width: 360px;
+  max-height: 340px;
+  padding: var(--space-1-5);
+  border-radius: var(--radius-md);
+  background: var(--glass-fill-strong);
+  backdrop-filter: blur(20px) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(20px) saturate(var(--glass-saturation));
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-float);
+  animation: dropdownIn var(--dur-base) var(--ease-spring);
+  transform-origin: var(--radix-select-content-transform-origin, top center);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  margin-bottom: var(--space-1-5);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  border: 1px solid var(--divider);
+}
+
+.searchIcon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.searchInput {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+}
+
+.searchInput::placeholder {
+  color: var(--text-tertiary);
+}
+
+.searchClear {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 0;
+}
+
+.searchClear:hover {
+  color: var(--text-primary);
+}
+
+.viewport {
+  padding: 2px 0;
+  max-height: 250px;
+}
+
+.scrollButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2-5);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+  transition: var(--motion-control);
+}
+
+.item[data-highlighted] {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.item[data-disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.itemMain {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+
+.itemText {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.badgeRelease {
+  background: var(--surface-inset);
+  color: var(--text-secondary);
+}
+
+.badgeBeta {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-style: italic;
+}
+
+.badgeAlpha {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.itemIndicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.emptyText {
+  padding: var(--space-3);
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+
+@keyframes dropdownIn {
+  from {
+    opacity: 0;
+    translate: 0 -4px;
+    scale: 0.97;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    scale: 1;
+  }
+}

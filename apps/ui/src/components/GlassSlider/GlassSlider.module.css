@@ -1,0 +1,96 @@
+.root {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  touch-action: none;
+  user-select: none;
+  cursor: pointer;
+}
+
+.track {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  box-shadow: var(--control-track-inset);
+  overflow: hidden;
+  transition:
+    height var(--dur-base) var(--ease-out),
+    background-color var(--dur-base) var(--ease-out);
+}
+
+.root:hover .track {
+  height: 8px;
+  background: color-mix(in srgb, var(--text-primary) 20%, transparent);
+}
+
+.range {
+  position: absolute;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+  transition: background-color var(--dur-base) var(--ease-out);
+}
+
+.thumb {
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--knob);
+  border: 1px solid var(--knob-edge);
+  box-shadow:
+    var(--knob-shadow),
+    0 0 0 1px color-mix(in srgb, var(--text-inverse) 15%, transparent);
+  position: relative;
+  cursor: grab;
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+.root:hover .thumb,
+.thumb:hover {
+  transform: scale(1.25);
+  box-shadow:
+    0 0 0 5px var(--accent-soft),
+    0 4px 14px rgba(0, 0, 0, 0.35),
+    var(--knob-shadow);
+}
+
+.thumb:active {
+  cursor: grabbing;
+  transform: scale(1.08);
+  box-shadow:
+    0 0 0 6px var(--accent-soft),
+    0 2px 8px rgba(0, 0, 0, 0.4),
+    var(--knob-shadow);
+  transition-duration: var(--dur-press);
+}
+
+.thumbHighlight {
+  position: absolute;
+  inset: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    opacity var(--dur-base) var(--ease-out);
+}
+
+.thumb:hover .thumbHighlight {
+  transform: scale(1.1);
+}
+
+.thumb:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px var(--accent),
+    0 0 14px var(--accent-glow),
+    var(--knob-shadow);
+}

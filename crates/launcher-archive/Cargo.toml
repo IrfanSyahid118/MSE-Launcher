@@ -1,0 +1,20 @@
+[package]
+name = "launcher-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+launcher-types = { path = "../launcher-types" }
+launcher-security = { path = "../launcher-security" }
+zip = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dunce = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
