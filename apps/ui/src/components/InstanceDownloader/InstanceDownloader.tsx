@@ -134,7 +134,6 @@ export function InstanceDownloader({
   const searchQuery = useContentSearch(query)
   const items = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data?.items])
 
-  // Auto-select first item when items change
   useEffect(() => {
     if (items.length > 0) {
       if (!selectedProject || !items.some((it) => it.id === selectedProject.id)) {
@@ -146,7 +145,6 @@ export function InstanceDownloader({
     }
   }, [items, selectedProject])
 
-  // Query versions for the selected project
   const versionsFilter = useMemo(
     () => ({
       minecraftVersion: instance.minecraftVersion,
@@ -208,7 +206,6 @@ export function InstanceDownloader({
     type,
   ])
 
-  // Select latest version by default
   useEffect(() => {
     if (compatibleVersions.length > 0) {
       setSelectedVersionId((curr) => {
@@ -222,7 +219,6 @@ export function InstanceDownloader({
     }
   }, [compatibleVersions])
 
-  // Task event listeners; progres tampil di dock bawah. Notifikasi selesai ditangani terpusat oleh AppShell.
   useEffect(() => {
     if (!installTaskId) return
     const title = selectedProject?.title ?? t('browse.installing')

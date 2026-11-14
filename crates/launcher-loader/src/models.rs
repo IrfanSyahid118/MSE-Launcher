@@ -56,7 +56,7 @@ pub fn compare_loader_versions(left: &str, right: &str) -> std::cmp::Ordering {
         match (l_num, r_num) {
             (Some(l), Some(r)) => {
                 if l != r {
-                    return r.cmp(&l); // descending: terbaru lebih dulu
+                    return r.cmp(&l);
                 }
             }
             _ => {
@@ -75,8 +75,8 @@ pub fn compare_loader_versions(left: &str, right: &str) -> std::cmp::Ordering {
 
     match (l_pre, r_pre) {
         (None, None) => std::cmp::Ordering::Equal,
-        (None, Some(_)) => std::cmp::Ordering::Less, // release is newer than prerelease
-        (Some(_), None) => std::cmp::Ordering::Greater, // prerelease is older than release
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
         (Some(lp), Some(rp)) => {
             let lp_parts: Vec<&str> = lp.split('.').collect();
             let rp_parts: Vec<&str> = rp.split('.').collect();

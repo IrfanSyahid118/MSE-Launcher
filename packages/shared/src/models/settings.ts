@@ -84,8 +84,6 @@ export interface DiscordSettingsPatch {
 }
 
 export const DEFAULT_THEME: ThemeSettings = {
-  // Kanvas gelap adalah identitas visual launcher; terang dan ikut sistem
-  // tetap tersedia di Pengaturan.
   mode: 'dark',
   reduceTransparency: false,
   reduceMotion: false,

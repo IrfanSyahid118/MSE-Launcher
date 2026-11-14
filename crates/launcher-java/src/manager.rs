@@ -136,7 +136,6 @@ where
     let target_dir = launcher_security::safe_subpath(&platform_dir, component)?;
     let java_exe = target_dir.join("bin").join(JAVA_BIN_NAME);
 
-    // Jika sudah terpasang, pastikan versi major sesuai sebelum mengembalikan
     if java_exe.exists() {
         if let Ok(output) = probe(&java_exe) {
             if let Ok(inst) = parse_java_output(&output, &java_exe, paths) {
@@ -153,7 +152,6 @@ where
         }
     }
 
-    // Ambil katalog runtime dari Mojang
     let catalog: HashMap<String, HashMap<String, Vec<RuntimeCatalogEntry>>> =
         http.get_json(catalog_url).await?;
 
@@ -175,7 +173,6 @@ where
         LauncherErrorPayload::not_found(format!("Entri manifest kosong untuk {}", component))
     })?;
 
-    // Ambil manifest file list
     let manifest: RuntimeManifest = http.get_json(&first.manifest.url).await?;
 
     let mut tasks = Vec::new();
@@ -218,7 +215,6 @@ where
         }
     }
 
-    // Unduh semua file secara paralel
     downloader
         .download_all(tasks, progress_callback, cancelled)
         .await?;
@@ -289,7 +285,6 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let catalog_url = format!("http://{}/catalog.json", addr);
 
-        // Existing binary reports Java 17 even though caller requested Java 21
         let res = ensure_managed_java_with_probe(
             &paths,
             21,

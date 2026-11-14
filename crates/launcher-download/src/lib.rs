@@ -55,7 +55,7 @@ impl Drop for TempFileGuard {
     }
 }
 
-const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub async fn verify_local_file(
     path: &Path,
@@ -182,7 +182,6 @@ impl DownloadManager {
             }
         }
 
-        // Cek cache lokal hanya jika minimal satu hash integritas tersedia
         if (task.expected_sha1.is_some() || task.expected_sha256.is_some())
             && verify_local_file_hashes(
                 &task.destination,
@@ -303,7 +302,6 @@ impl DownloadManager {
         }
         drop(file);
 
-        // Verifikasi SHA-1
         if let Some(ref expected_sha1) = task.expected_sha1 {
             let actual_sha1 = hex::encode(sha1_hasher.finalize());
             if !actual_sha1.eq_ignore_ascii_case(expected_sha1) {
@@ -315,7 +313,6 @@ impl DownloadManager {
             }
         }
 
-        // Verifikasi SHA-256
         if let Some(ref expected_sha256) = task.expected_sha256 {
             let actual_sha256 = hex::encode(sha256_hasher.finalize());
             if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
@@ -327,7 +324,6 @@ impl DownloadManager {
             }
         }
 
-        // Rename atomik ke target
         replace_destination(&temp_path, &task.destination).await?;
 
         temp_guard.disarm();
@@ -428,13 +424,10 @@ mod tests {
             .await
             .unwrap();
 
-        // SHA-1 of "Minecraft Launcher Rust"
         let hash = hex::encode(Sha1::digest(b"Minecraft Launcher Rust"));
 
         assert!(verify_local_file(&file_path, Some(23), Some(&hash)).await);
-        // Salah ukuran
         assert!(!verify_local_file(&file_path, Some(10), Some(&hash)).await);
-        // Salah hash
         assert!(
             !verify_local_file(
                 &file_path,

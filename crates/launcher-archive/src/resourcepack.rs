@@ -165,7 +165,6 @@ pub fn build_skin_resourcepack(
         let options =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        // 1. pack.mcmeta (kompatibel dari 1.8 hingga 1.21+)
         let mcmeta = r#"{
   "pack": {
     "pack_format": 15,
@@ -180,12 +179,9 @@ pub fn build_skin_resourcepack(
             LauncherErrorPayload::file_system(format!("Gagal menulis data pack.mcmeta: {}", e))
         })?;
 
-        // 2. Tulis skin ke semua target texture entity pemain Minecraft
         let paths = [
-            // Legacy (1.8 - 1.19)
             "assets/minecraft/textures/entity/steve.png",
             "assets/minecraft/textures/entity/alex.png",
-            // Modern Wide (1.20+)
             "assets/minecraft/textures/entity/player/wide/steve.png",
             "assets/minecraft/textures/entity/player/wide/alex.png",
             "assets/minecraft/textures/entity/player/wide/ari.png",
@@ -195,7 +191,6 @@ pub fn build_skin_resourcepack(
             "assets/minecraft/textures/entity/player/wide/noor.png",
             "assets/minecraft/textures/entity/player/wide/sunny.png",
             "assets/minecraft/textures/entity/player/wide/zuri.png",
-            // Modern Slim (1.20+)
             "assets/minecraft/textures/entity/player/slim/steve.png",
             "assets/minecraft/textures/entity/player/slim/alex.png",
             "assets/minecraft/textures/entity/player/slim/ari.png",

@@ -52,7 +52,6 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Lau
         }
     }
 
-    // Rename atomik ke path target
     if let Err(e) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(LauncherErrorPayload::internal(format!(
@@ -140,15 +139,12 @@ mod tests {
             count: 42,
         };
 
-        // Write atomic
         write_json_atomic(&file_path, &data).expect("write atomic failed");
         assert!(file_path.exists());
 
-        // Read back
         let read_back: Option<DummyData> = read_json_file(&file_path).expect("read failed");
         assert_eq!(read_back, Some(data));
 
-        // Corrupt file
         fs::write(&file_path, b"INVALID JSON {[[{").unwrap();
         let read_corrupt: Option<DummyData> =
             read_json_file(&file_path).expect("quarantine failed");
@@ -158,7 +154,6 @@ mod tests {
             "Corrupt file should have been renamed/quarantined"
         );
 
-        // Verify quarantined file exists
         let entries = fs::read_dir(temp.path()).unwrap();
         let corrupt_found = entries.flatten().any(|e| {
             e.file_name()

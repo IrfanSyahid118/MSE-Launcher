@@ -20,7 +20,7 @@ const DIAGNOSTIC_PREFIX: &str = "MCSE1:";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LauncherLogLine {
-    pub stream: String, // "stdout" | "stderr" | "system"
+    pub stream: String,
     pub line: String,
     pub time: String,
 }

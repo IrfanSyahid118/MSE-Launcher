@@ -104,7 +104,6 @@ pub fn parse_java_output(
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
-    // Cek apakah managed runtime
     let canonical_exe =
         dunce::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
     let canonical_runtimes =
@@ -133,7 +132,6 @@ pub fn find_candidate_executables(paths: &DataPaths) -> Vec<PathBuf> {
 
     let bin_name = if cfg!(windows) { "java.exe" } else { "java" };
 
-    // 1. Managed runtimes di shared/runtimes/<platform>
     let managed_base = paths.runtimes_dir.join(platform_key);
     if let Ok(entries) = std::fs::read_dir(&managed_base) {
         for entry in entries.flatten() {
@@ -146,7 +144,6 @@ pub fn find_candidate_executables(paths: &DataPaths) -> Vec<PathBuf> {
         }
     }
 
-    // 2. JAVA_HOME
     if let Ok(java_home) = std::env::var("JAVA_HOME") {
         let p = PathBuf::from(java_home);
         let exe = p.join("bin").join(bin_name);
@@ -160,7 +157,6 @@ pub fn find_candidate_executables(paths: &DataPaths) -> Vec<PathBuf> {
         }
     }
 
-    // 3. PATH
     let path_sep = if cfg!(windows) { ';' } else { ':' };
     if let Ok(path_var) = std::env::var("PATH") {
         for entry in path_var.split(path_sep) {
@@ -232,7 +228,6 @@ pub fn find_candidate_executables(paths: &DataPaths) -> Vec<PathBuf> {
         }
     }
 
-    // Hapus duplikasi berdasarkan canonical path dan hanya terima executable tervalidasi (SEC-03)
     let mut unique = std::collections::HashSet::new();
     let mut result = Vec::new();
 
@@ -261,7 +256,6 @@ pub fn detect_all_installations(paths: &DataPaths) -> Vec<JavaInstallation> {
         }
     }
 
-    // Urutkan: managed lebih dulu, lalu major version tertinggi, lalu 64-bit lebih dulu
     installations.sort_by(|a, b| {
         b.managed
             .cmp(&a.managed)

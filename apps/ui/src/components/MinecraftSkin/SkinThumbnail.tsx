@@ -52,15 +52,11 @@ export function SkinThumbnail({
       const armY = 8
 
       const base: Region[] = [
-        // Kaki kanan dan kiri
         { sx: 4, sy: 20, sw: 4, sh: 12, dx: 4, dy: legY },
         { sx: 20, sy: 52, sw: 4, sh: 12, dx: 8, dy: legY },
-        // Lengan kanan dan kiri
         { sx: 44, sy: 20, sw: armWidth, sh: 12, dx: 0, dy: armY },
         { sx: 36, sy: 52, sw: armWidth, sh: 12, dx: 16 - armWidth, dy: armY },
-        // Badan
         { sx: 20, sy: 20, sw: 8, sh: 12, dx: 4, dy: armY },
-        // Kepala
         { sx: 8, sy: 8, sw: 8, sh: 8, dx: 4, dy: 0 },
       ]
 

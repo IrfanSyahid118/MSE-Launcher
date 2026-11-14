@@ -733,7 +733,6 @@ impl LoaderService {
                 fallback_profile,
                 jar_bytes,
             } => {
-                // Pastikan parent vanilla JSON & client JAR tersedia sebelum --installClient
                 let parent_jar = launcher_security::safe_subpath(
                     &self.paths.versions_dir,
                     &format!("{minecraft_version}/{minecraft_version}.jar"),

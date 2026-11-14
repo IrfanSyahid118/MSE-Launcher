@@ -53,7 +53,6 @@ pub fn merge_version_detail(
         merged.main_class = Some(mc.clone());
     }
 
-    // Merge arguments jika ada
     if parent.arguments.is_some() || profile.arguments.is_some() {
         let mut game_args = Vec::new();
         let mut jvm_args = Vec::new();

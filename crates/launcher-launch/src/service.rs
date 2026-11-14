@@ -211,7 +211,6 @@ impl LaunchService {
         let instance = self.instances.get(instance_id)?;
         let settings = self.settings.get();
 
-        // 1. Dapatkan akun aktif
         let active_account_id = settings.active_account_id.as_deref().ok_or_else(|| {
             LauncherErrorPayload::invalid_input("Pilih atau buat akun sebelum bermain.")
         })?;
@@ -221,7 +220,6 @@ impl LaunchService {
             .get(active_account_id)
             .ok_or_else(|| LauncherErrorPayload::not_found("Akun aktif tidak ditemukan."))?;
 
-        // SEC-03: Ambil token autentikasi terenkripsi dari SecretStore untuk akun Microsoft
         if account.account_type == AccountType::Microsoft {
             if account.tokens.is_none() {
                 let secret_key = format!("tokens:{}", account.id);
@@ -239,7 +237,6 @@ impl LaunchService {
                 }
             }
 
-            // Periksa kedaluwarsa sesi (refresh otomatis jika < 5 menit sebelum expired)
             let needs_refresh = if let Some(ref exp_str) = account.expires_at {
                 if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(exp_str) {
                     exp.with_timezone(&chrono::Utc)
@@ -263,7 +260,6 @@ impl LaunchService {
 
         on_progress("Memeriksa kelengkapan versi Minecraft...".to_string(), 1, 5);
 
-        // 2. Dapatkan version detail (mendukung Vanilla, Fabric, Quilt, Forge, NeoForge)
         let loader_java_path = if matches!(
             instance.loader.loader_type,
             launcher_types::LoaderType::Forge | launcher_types::LoaderType::Neoforge
@@ -307,7 +303,6 @@ impl LaunchService {
             )
             .await?;
 
-        // 3. Pastikan semua berkas game dan library sudah terunduh
         on_progress("Mengunduh library dan file game...".to_string(), 2, 5);
         let version_tasks = self.versions.build_version_download_tasks(&detail)?;
         self.downloader
@@ -318,7 +313,6 @@ impl LaunchService {
             return Err(LauncherErrorPayload::internal("Peluncuran dibatalkan."));
         }
 
-        // 4. Unduh aset game jika diperlukan
         on_progress("Memeriksa aset game...".to_string(), 3, 5);
         let asset_tasks = self.versions.fetch_asset_tasks(&detail).await?;
         self.downloader
@@ -329,7 +323,6 @@ impl LaunchService {
             return Err(LauncherErrorPayload::internal("Peluncuran dibatalkan."));
         }
 
-        // 5. Bersihkan natives/argfiles lama lalu ekstrak natives ke direktori unik per peluncuran
         on_progress("Menyiapkan library native...".to_string(), 4, 5);
         let instance_dir = launcher_security::safe_subpath(&self.paths.instances_dir, instance_id)?;
         launcher_security::ensure_descendants_no_symlink(&self.paths.instances_dir, &instance_dir)?;
@@ -350,7 +343,6 @@ impl LaunchService {
         let natives_dir = extract_natives(&detail, &self.paths, &instance_dir)?;
         let mut natives_guard = NativesDirGuard::new(instance_dir.clone(), natives_dir.clone());
 
-        // 6. Resolusi Java executable (FN-08: Otomatis unduh managed Mojang JRE jika belum ada)
         let required_major = detail
             .java_version
             .as_ref()
@@ -373,7 +365,6 @@ impl LaunchService {
             )
             .await?;
 
-        // 7. Bentuk Classpath
         let classpath = assemble_classpath(&detail, &self.paths);
         let mut cp_parts = Vec::with_capacity(classpath.len());
         for p in &classpath {
@@ -389,7 +380,6 @@ impl LaunchService {
         let game_dir = launcher_security::safe_subpath(&instance_dir, "minecraft")?;
         launcher_security::ensure_dir_within(&instance_dir, &game_dir, false)?;
 
-        // Offline skin injection: Resource Pack otomatis (Vanilla & Modded) + CustomSkinLoader (Modded)
         self.prepare_skin_artifacts(&instance, &account, &game_dir, &cancelled)
             .await?;
 
@@ -398,7 +388,6 @@ impl LaunchService {
             .prepare_game_assets(&detail, &game_dir)
             .await?;
 
-        // 8. Bentuk Variabel Substitusi
         let mut vars = HashMap::new();
         vars.insert("auth_player_name", account.username.as_str());
         vars.insert("version_name", version_id);
@@ -471,24 +460,20 @@ impl LaunchService {
         let xuid_str = account.xuid.as_deref().unwrap_or("");
         vars.insert("auth_xuid", xuid_str);
 
-        // 9. Bentuk argumen JVM
         let mut final_args = Vec::new();
 
-        // Memory: Pastikan min_mb <= max_mb agar JVM tidak crash dengan "Incompatible minimum and maximum heap sizes"
+        // Clamp min_mb <= max_mb so the JVM does not abort on incompatible heap sizes.
         let (min_mb, max_mb) = compute_memory_bounds(&instance, &settings);
         final_args.push(format!("-Xms{}m", min_mb));
         final_args.push(format!("-Xmx{}m", max_mb));
 
-        // Presets & argumen JVM per-instance
         final_args.extend(collect_jvm_args(&instance, &settings));
 
-        // Native path
         final_args.push(format!("-Djava.library.path={}", natives_dir_str));
 
         let mut legacy_args_mode = false;
         let mut game_args = Vec::new();
 
-        // Deteksi sistem operasi & arsitektur dinamis untuk evaluasi rules
         let current_os = if cfg!(target_os = "windows") {
             "windows"
         } else if cfg!(target_os = "macos") {
@@ -526,22 +511,18 @@ impl LaunchService {
             final_args.push(classpath_str.clone());
         }
 
-        // Main class
         let main_class = detail
             .main_class
             .unwrap_or_else(|| "net.minecraft.client.main.Main".to_string());
         final_args.push(main_class);
 
-        // Game args
         final_args.extend(game_args);
 
-        // Quick connect server address jika ada
         if let Some(server) = server_address {
             let base_mc_version = detail.inherits_from.as_deref().unwrap_or(&detail.id);
             final_args.extend(build_quick_connect_args(base_mc_version, server));
         }
 
-        // 10. SEC-02 & SC-04: Buat argfile aman jika has_token atau total panjang besar
         let validated_java = launcher_security::validate_java_executable_path(
             std::path::Path::new(&java_inst.path),
         )?;
@@ -598,7 +579,7 @@ impl LaunchService {
                 }
             };
 
-        // Bersihkan argfile setelah proses berhasil di-spawn agar tidak tertinggal di disk (SC-05)
+        // Remove argfile immediately after spawn so tokens do not remain on disk.
         if let Some(argfile) = created_argfile {
             let inst_dir_bg = instance_dir.clone();
             tokio::spawn(async move {
@@ -625,7 +606,6 @@ impl LaunchService {
             }
         }
 
-        // Pangkas memori kerja launcher saat game berjalan (SEC-04)
         launcher_platform::trim_working_set();
 
         Ok(pid)
@@ -659,7 +639,6 @@ impl LaunchService {
             } else if skin_source.starts_with("http://") || skin_source.starts_with("https://") {
                 read_cached_skin()
             } else {
-                // Tolak pembacaan path file lokal arbitrer (PS-02)
                 None
             }
         } else {
@@ -754,7 +733,6 @@ impl LaunchService {
             &format!("{}.png", account.username.to_lowercase()),
         )?;
 
-        // 1. Sinkronisasi skin lokal (simpan nama asli, lowercase, serta fallback Steve/Alex/default)
         let copy_targets = |src: &std::path::Path| {
             let _ = std::fs::copy(src, &user_skin_path);
             let _ = std::fs::copy(src, &user_skin_lower_path);
@@ -847,7 +825,6 @@ impl LaunchService {
             write_targets(&default_bytes);
         }
 
-        // 2. Sinkronisasi cape lokal
         let local_capes_dir = csl_dir.join("LocalSkin").join("capes");
         launcher_security::ensure_dir_within(game_dir, &local_capes_dir, false)?;
         let target_cape = launcher_security::safe_subpath(
@@ -910,7 +887,7 @@ impl LaunchService {
             let _ = std::fs::copy(&cached_cape, local_capes_dir.join("default.png"));
         }
 
-        // 3. Konfigurasi bawaan CustomSkinLoader (jangan timpa konfigurasi milik pengguna)
+        // Preserve existing CustomSkinLoader.json so user customizations stay intact.
         let config_file = csl_dir.join("CustomSkinLoader.json");
         if !config_file.exists() {
             let default_config = serde_json::json!({
@@ -1110,7 +1087,7 @@ fn supports_quick_play(mc_version: &str) -> bool {
         return false;
     }
 
-    // Minecraft snapshot format: YYwWWx (quickPlayMultiplayer added in 23w14a for 1.20)
+    // Snapshot YYwWWx format; quickPlayMultiplayer was added in 23w14a (1.20).
     if let Some((year_str, rest)) = trimmed.split_once('w') {
         if year_str.len() == 2 && year_str.chars().all(|c| c.is_ascii_digit()) {
             let week_digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -1120,7 +1097,6 @@ fn supports_quick_play(mc_version: &str) -> bool {
         }
     }
 
-    // Release / pre-release / modded prefixes such as "1.20.4", "1.20-pre1", "1.20.4-forge-..."
     let core = trimmed.split(['-', '_', '+']).next().unwrap_or(trimmed);
     let mut parts = core.split('.');
     let major = parts.next().and_then(|p| p.parse::<u32>().ok());
@@ -1145,7 +1121,7 @@ fn split_legacy_server_address(server: &str) -> (&str, Option<&str>) {
     }
 
     if let Some((host, port)) = server.rsplit_once(':') {
-        // Bare unbracketed IPv6 address (contains additional ':') must not be split as host:port
+        // Do not split unbracketed IPv6 addresses on ':' as host:port.
         if !host.contains(':') && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
             return (host, Some(port));
         }

@@ -19,7 +19,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_running_game_kill_deadlock() {
-        // Spawns a long-running process
         #[cfg(windows)]
         let exe = Path::new("cmd.exe");
         #[cfg(windows)]
@@ -34,12 +33,9 @@ mod tests {
             .await
             .expect("Failed to spawn process");
 
-        // Small delay to ensure the exit-monitor task acquires the lock
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Calling kill() should complete promptly.
-        // In the vulnerable code, child_for_wait holds child.lock() in wait().await,
-        // so kill() hangs indefinitely and times out!
+        // Wait must release the child mutex so kill() cannot deadlock.
         let kill_res = timeout(Duration::from_secs(2), running_game.kill()).await;
         assert!(
             kill_res.is_ok(),
@@ -119,13 +115,11 @@ mod tests {
         );
 
         for cycle in 1..=50 {
-            // 1. Install simulation: create temp folder and dummy configs
             let temp_dir = tempfile::tempdir().expect("tempdir");
             let inst_cfg = temp_dir.path().join("instance.json");
             std::fs::write(&inst_cfg, b"{\"id\":\"soak-test\",\"name\":\"Soak\"}").expect("write");
             std::fs::create_dir_all(temp_dir.path().join("mods")).expect("mkdir");
 
-            // 2. Launch simulation
             #[cfg(windows)]
             let exe = Path::new("ping.exe");
             #[cfg(windows)]
@@ -141,7 +135,6 @@ mod tests {
 
             tokio::time::sleep(Duration::from_millis(25)).await;
 
-            // 3. Stop simulation
             let _ = running_game.kill().await;
             tokio::time::sleep(Duration::from_millis(25)).await;
 
@@ -166,7 +159,6 @@ mod tests {
             end_handles as i32 - start_handles as i32
         );
 
-        // Sanity assertions: Handles should not leak dozens of unclosed handles across 50 cycles
         #[cfg(windows)]
         {
             let handle_delta = (end_handles as i32 - start_handles as i32).abs();

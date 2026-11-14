@@ -192,7 +192,6 @@ pub(crate) async fn build_install_plan_with_bases(
 
             for dep in &target_file.dependencies {
                 if dep.relation_type == 3 {
-                    // Required Dependency
                     if let Ok(files) = list_curseforge_versions_with_base(
                         http,
                         curseforge_base,

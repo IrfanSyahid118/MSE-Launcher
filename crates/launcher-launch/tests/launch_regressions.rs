@@ -151,7 +151,6 @@ async fn test_n07_launch_respects_java_memory_and_jvm_settings() {
     )
     .unwrap();
 
-    // Subcase A: Auto mode ignores stale instance.java.path & validates settings.java.custom_path
     let mut inst_a = instances
         .create(launcher_types::CreateInstanceRequest {
             name: "Settings Subcase A".into(),
@@ -208,7 +207,6 @@ async fn test_n07_launch_respects_java_memory_and_jvm_settings() {
         err_a.message
     );
 
-    // Subcase B: InstanceJavaMode::Custom with missing path must return error for that path
     let mut inst_b = instances
         .create(launcher_types::CreateInstanceRequest {
             name: "Settings Subcase B".into(),
@@ -248,7 +246,6 @@ async fn test_n07_launch_respects_java_memory_and_jvm_settings() {
         err_b.message
     );
 
-    // Subcase C: prefer_managed=false with no custom path and no Java 99 must return error immediately
     settings
         .set(launcher_types::SettingsPatch {
             active_account_id: None,
@@ -296,7 +293,6 @@ async fn test_n07_launch_respects_java_memory_and_jvm_settings() {
         err_c.message
     );
 
-    // Subcase D: prefer_managed=true cancelled during step 4 must fail, never fall back
     settings
         .set(launcher_types::SettingsPatch {
             active_account_id: None,
@@ -488,8 +484,6 @@ async fn test_n17_skin_injection_respects_account_type_and_no_forced_csl_downloa
 
     let cancel = Arc::new(AtomicBool::new(false));
 
-    // Case 1: Official Microsoft account must NOT generate SkinLoader-ResourcePack.zip,
-    // options.txt, CustomSkinLoader config, or download CustomSkinLoader JAR.
     let ms_game_dir = paths.instances_dir.join(&inst.id).join("ms-minecraft");
     std::fs::create_dir_all(&ms_game_dir).unwrap();
     let ms_acc = launcher_types::Account {
@@ -534,8 +528,6 @@ async fn test_n17_skin_injection_respects_account_type_and_no_forced_csl_downloa
         "Microsoft account launch must not download CustomSkinLoader JAR into mods/"
     );
 
-    // Case 2: Offline account WITHOUT custom skin must NOT write SkinLoader-ResourcePack.zip or options.txt,
-    // and must NOT force-download CustomSkinLoader JAR into mods/.
     let offline_no_skin_dir = paths.instances_dir.join(&inst.id).join("off-noskin");
     std::fs::create_dir_all(&offline_no_skin_dir).unwrap();
     let off_default = launcher_types::Account {
@@ -569,8 +561,6 @@ async fn test_n17_skin_injection_respects_account_type_and_no_forced_csl_downloa
         "Must not force-download CustomSkinLoader JAR into mods/"
     );
 
-    // Case 3: Offline account WITH custom skin updates LocalSkin & ResourcePack, preserves existing
-    // CustomSkinLoader.json customizations, and does NOT force-download CustomSkinLoader JAR.
     let offline_skin_dir = paths.instances_dir.join(&inst.id).join("off-custom");
     let csl_dir = offline_skin_dir.join("CustomSkinLoader");
     std::fs::create_dir_all(&csl_dir).unwrap();
@@ -611,7 +601,6 @@ async fn test_n17_skin_injection_respects_account_type_and_no_forced_csl_downloa
 
 #[test]
 fn test_n18_quick_connect_args_version_and_ipv6() {
-    // MC 1.20+ should use --quickPlayMultiplayer with the full server address
     assert_eq!(
         launcher_launch::build_quick_connect_args("1.20.4", "play.example.com:25565"),
         vec!["--quickPlayMultiplayer", "play.example.com:25565"]
@@ -625,7 +614,6 @@ fn test_n18_quick_connect_args_version_and_ipv6() {
         vec!["--quickPlayMultiplayer", "mc.example.net"]
     );
 
-    // Pre-1.20 uses --server / --port and must handle IPv6 correctly
     assert_eq!(
         launcher_launch::build_quick_connect_args("1.19.4", "play.example.com:25565"),
         vec!["--server", "play.example.com", "--port", "25565"]

@@ -61,7 +61,6 @@ export function useActiveSkin(account: Account | null | undefined): ActiveSkinIn
   const hasCustom = Boolean(resolvedSkin)
   const capeUrl = resolveSkinUrl(account?.capeUrl)
 
-  // 1. Akun Microsoft resmi
   if (isMicrosoftAccount && (selectedSkinType === 'microsoft' || !customSkinUrl)) {
     const skinUrl = resolvedSkin || `https://crafatar.com/skins/${account.uuid}`
     return {
@@ -75,7 +74,6 @@ export function useActiveSkin(account: Account | null | undefined): ActiveSkinIn
     }
   }
 
-  // 2. Skin kustom yang diunggah atau skin tersimpan pada akun offline
   if (resolvedSkin && (selectedSkinType === 'custom' || (!customSkinUrl && account?.skinUrl))) {
     return {
       skinUrl: resolvedSkin,
@@ -88,7 +86,6 @@ export function useActiveSkin(account: Account | null | undefined): ActiveSkinIn
     }
   }
 
-  // 3. Template bawaan Alex
   if (selectedSkinType === 'alex') {
     return {
       skinUrl: getAlexSkinDataUrl(),
@@ -101,7 +98,6 @@ export function useActiveSkin(account: Account | null | undefined): ActiveSkinIn
     }
   }
 
-  // 4. Template bawaan Steve (default)
   return {
     skinUrl: getSteveSkinDataUrl(),
     isSlim,

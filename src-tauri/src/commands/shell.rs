@@ -61,15 +61,12 @@ mod tests {
         assert!(validate_external_url("https://subdomain.minecraft.net/page").is_ok());
         assert!(validate_external_url("https://curseforge.com/minecraft").is_ok());
 
-        // HTTP scheme rejected
         assert!(validate_external_url("http://modrinth.com/mod").is_err());
 
-        // Substring / suffix spoofing rejected
         assert!(validate_external_url("https://evilmodrinth.com").is_err());
         assert!(validate_external_url("https://notminecraft.net").is_err());
         assert!(validate_external_url("https://attacker.com").is_err());
 
-        // Invalid URL format rejected
         assert!(validate_external_url("not-a-url").is_err());
         assert!(validate_external_url("file:///etc/passwd").is_err());
     }

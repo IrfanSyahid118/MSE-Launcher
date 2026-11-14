@@ -60,7 +60,7 @@ mod dpapi {
             pb_data: null_mut(),
         };
 
-        // CRYPTPROTECT_UI_FORBIDDEN = 0x1
+        // CRYPTPROTECT_UI_FORBIDDEN (0x1)
         let success = unsafe {
             CryptProtectData(
                 &in_blob,
@@ -84,7 +84,6 @@ mod dpapi {
         let result = slice.to_vec();
 
         unsafe {
-            // Zeroize sensitive plaintext buffer in memory before releasing
             std::ptr::write_bytes(out_blob.pb_data, 0, out_blob.cb_data as usize);
             LocalFree(out_blob.pb_data as *mut std::ffi::c_void);
         }
@@ -132,7 +131,6 @@ mod dpapi {
         let result = slice.to_vec();
 
         unsafe {
-            // Zeroize sensitive plaintext buffer in memory before releasing
             std::ptr::write_bytes(out_blob.pb_data, 0, out_blob.cb_data as usize);
             LocalFree(out_blob.pb_data as *mut std::ffi::c_void);
         }
@@ -537,21 +535,17 @@ mod tests {
             Some("super_secret_value".to_string())
         );
 
-        // Check file exists on disk and is not plaintext
         let on_disk = fs::read(&path).expect("read failed");
         assert!(!on_disk.is_empty());
         let as_str = String::from_utf8_lossy(&on_disk);
-        assert!(!as_str.contains("super_secret_value")); // encrypted!
+        assert!(!as_str.contains("super_secret_value"));
 
-        // Read with new store instance
         let store2 = SecretStore::new(path);
-        // Note: load_from_disk uses try_write at constructor
         assert_eq!(
             store2.get("test_key").await,
             Some("super_secret_value".to_string())
         );
 
-        // Delete
         store2.delete("test_key").await.expect("delete failed");
         assert_eq!(store2.get("test_key").await, None);
     }

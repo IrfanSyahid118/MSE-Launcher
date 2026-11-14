@@ -15,11 +15,9 @@ pub fn offline_uuid(username: &str) -> String {
     hasher.update(username.as_bytes());
     let mut hash = hasher.finalize();
 
-    // Set bit versi 3
     if let Some(b) = hash.get_mut(6) {
         *b = (*b & 0x0f) | 0x30;
     }
-    // Set bit varian RFC 4122
     if let Some(b) = hash.get_mut(8) {
         *b = (*b & 0x3f) | 0x80;
     }
@@ -35,11 +33,9 @@ pub fn offline_uuid_with_variant(username: &str, is_slim: bool) -> String {
     hasher.update(username.as_bytes());
     let mut hash = hasher.finalize();
 
-    // Set bit versi 3
     if let Some(b) = hash.get_mut(6) {
         *b = (*b & 0x0f) | 0x30;
     }
-    // Set bit varian RFC 4122
     if let Some(b) = hash.get_mut(8) {
         *b = (*b & 0x3f) | 0x80;
     }
@@ -122,7 +118,6 @@ impl AccountsStore {
             ));
         }
 
-        // Karakter hanya boleh alfanumerik dan garis bawah/strip
         if !username
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
@@ -136,7 +131,6 @@ impl AccountsStore {
 
         let mut file = self.cache.write().unwrap_or_else(|e| e.into_inner());
 
-        // Jika akun dengan username dan tipe offline sudah ada, kembalikan yang ada
         if let Some(existing) = file.accounts.iter().find(|a| {
             a.username.eq_ignore_ascii_case(username) && a.account_type == AccountType::Offline
         }) {
@@ -291,13 +285,11 @@ mod tests {
         let created = store.create_offline("VariantSyncUser").unwrap();
         let old_id = created.id.clone();
 
-        // Simulate caller persisting settings.active_account_id and skins/{old_id}.png before update_skin
         let skins_dir = paths.root.join("skins");
         std::fs::create_dir_all(&skins_dir).unwrap();
         let old_skin_file = skins_dir.join(format!("{}.png", old_id));
         std::fs::write(&old_skin_file, b"PNG_DATA").unwrap();
 
-        // Pick a variant whose offline UUID differs from created.uuid
         let target_variant = if offline_uuid_with_variant("VariantSyncUser", true) != created.uuid {
             "slim"
         } else {
@@ -322,7 +314,6 @@ mod tests {
             updated.uuid, expected_uuid,
             "Game launch UUID must reflect chosen skin variant"
         );
-        // 1) Lookup by settings.active_account_id (old_id) succeeds
         assert!(
             store.get(&old_id).is_some(),
             "Account lookup by previous active_account_id ({}) failed after skin_variant={} changed id to {}",
@@ -330,7 +321,6 @@ mod tests {
             target_variant,
             updated.id
         );
-        // 2) Skin file path {updated.id}.png matches {old_id}.png
         assert!(
             skins_dir.join(format!("{}.png", updated.id)).exists(),
             "Expected skin file for account.id ({}.png) to exist, only {}.png exists",

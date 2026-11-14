@@ -86,7 +86,6 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
   const [loaderType, setLoaderType] = useState<LoaderType>('vanilla')
   const [loaderVersion, setLoaderVersion] = useState('')
 
-  // Modpack state
   const [modpackSearch, setModpackSearch] = useState('')
   const debouncedModpackSearch = useDebouncedValue(modpackSearch.trim(), SEARCH_DEBOUNCE_MS)
   const [selectedModpack, setSelectedModpack] = useState<ContentProjectSummary | null>(null)
@@ -142,7 +141,6 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
 
   const loaderVersionsQuery = useLoaderVersions(loaderType, version, loaderSelectable)
 
-  // Modpack search query
   const isModpackSource = source === 'modrinth' || source === 'curseforge'
   const isCurseForgeMissing = source === 'curseforge' && !curseForgeReady
 
@@ -161,7 +159,6 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
 
   const modpackSearchQuery = useContentSearch(modpackQuery)
 
-  // Modpack versions query
   const modpackVersionsQuery = useContentVersions(
     selectedModpack?.provider ?? 'modrinth',
     selectedModpack?.id ?? '',
@@ -201,7 +198,6 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
     }
   }, [modpackVersions, selectedVersionId])
 
-  // Reset form when dialog opens
   useEffect(() => {
     if (open && !wasOpen.current) {
       setName('')
@@ -236,7 +232,6 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
     }
   }, [loaderType, open, support, version])
 
-  // Listen to background task for modpack install; progres tampil di dock bawah. Notifikasi ditangani oleh AppShell.
   useEffect(() => {
     if (!installTaskId) return
     const title = selectedModpack?.title ?? name

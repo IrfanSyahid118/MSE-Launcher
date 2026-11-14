@@ -136,7 +136,6 @@ export function SkinSelector(): ReactNode {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const capeFileInputRef = useRef<HTMLInputElement>(null)
 
-  // Sinkronkan state lokal saat akun atau activeSkin berubah
   useEffect(() => {
     if (!account) return
 

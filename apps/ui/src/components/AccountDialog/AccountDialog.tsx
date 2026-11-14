@@ -105,7 +105,7 @@ export function AccountDialog({ open, onOpenChange }: AccountDialogProps): React
             try {
               await setActiveAccount.mutateAsync(account.id)
             } catch {
-              // Akun tetap tersimpan; pengguna bisa memilihnya dari menu akun.
+              // Account is already saved and selectable from the account menu.
             }
             pushToast(t('account.microsoftSuccess', { username: account.username }))
             handleOpenChange(false)

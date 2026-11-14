@@ -80,7 +80,8 @@ pub fn strip_formatting_codes(text: &str) -> String {
     while i < chars.len() {
         if let Some(&ch) = chars.get(i) {
             if ch == '§' {
-                i = i.saturating_add(2); // skip § and color code
+                // Skip the '§' prefix and its trailing formatting code character.
+                i = i.saturating_add(2);
             } else {
                 result.push(ch);
                 i = i.saturating_add(1);
@@ -160,7 +161,6 @@ pub async fn query_minecraft_server_status(
         let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
         let latency_ms = started_at.elapsed().as_millis().max(1) as u32;
 
-        // 1. Handshake Packet (ID 0x00, Protocol 767, Host, Port, NextState 1)
         let mut handshake_body = encode_varint(0x00);
         handshake_body.extend(encode_varint(767));
         handshake_body.extend(encode_mc_string(&host));
@@ -170,16 +170,13 @@ pub async fn query_minecraft_server_status(
         let mut handshake_packet = encode_varint(handshake_body.len() as i32);
         handshake_packet.extend(handshake_body);
 
-        // 2. Status Request Packet (ID 0x00)
         let status_req_body = encode_varint(0x00);
         let mut status_req_packet = encode_varint(status_req_body.len() as i32);
         status_req_packet.extend(status_req_body);
 
-        // Send both packets
         stream.write_all(&handshake_packet).await?;
         stream.write_all(&status_req_packet).await?;
 
-        // 3. Read Response Packet
         let mut buffer = Vec::new();
         let mut temp_buf = [0u8; 4096];
 
@@ -192,7 +189,6 @@ pub async fn query_minecraft_server_status(
                 buffer.extend_from_slice(chunk);
             }
             if buffer.len() > 512 * 1024 {
-                // Safety limit
                 break;
             }
 

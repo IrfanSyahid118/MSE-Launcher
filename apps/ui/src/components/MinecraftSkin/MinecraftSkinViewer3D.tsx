@@ -95,15 +95,14 @@ function createBoxMaterials(
     })
   }
 
-  // BoxGeometry face sequence: [+X, -X, +Y, -Y, +Z, -Z]
-  // In character space (+Z is front, +X is character's left, -X is character's right):
+  // BoxGeometry face order: +X (left), -X (right), +Y (top), -Y (bottom), +Z (front), -Z (back).
   return [
-    makeMat(faces.left), // +X face (character's left side)
-    makeMat(faces.right), // -X face (character's right side)
-    makeMat(faces.top), // +Y face (top)
-    makeMat(faces.bottom), // -Y face (bottom)
-    makeMat(faces.front), // +Z face (front)
-    makeMat(faces.back), // -Z face (back)
+    makeMat(faces.left),
+    makeMat(faces.right),
+    makeMat(faces.top),
+    makeMat(faces.bottom),
+    makeMat(faces.front),
+    makeMat(faces.back),
   ]
 }
 
@@ -119,10 +118,7 @@ export function MinecraftSkinViewer3D({
   viewBack = false,
 }: MinecraftSkinViewer3DProps): ReactNode {
   const containerRef = useRef<HTMLDivElement>(null)
-  // Kanvas dibuat oleh efek, bukan oleh React. Konteks WebGL yang sudah
-  // di-lose tetap terikat pada elemennya, sehingga memakai ulang elemen yang
-  // sama (seperti pada mount kedua StrictMode) membuat three.js menerima
-  // konteks mati dan melempar saat membaca `precision`.
+  // Create the canvas imperatively so React StrictMode remounts do not reuse a lost WebGL context.
   const canvasHostRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
@@ -133,15 +129,13 @@ export function MinecraftSkinViewer3D({
   const [isRenderable, setIsRenderable] = useState(true)
   const [webglFailed, setWebglFailed] = useState(false)
 
-  // Camera and scene references
   const sceneRef = useRef<THREE.Scene | null>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const bodyPartsRef = useRef<BodyPartMeshes | null>(null)
 
-  // Interaksi kamera; jarak mengikuti prop zoom saat itu juga.
-  const currentYawRef = useRef<number>(-0.4) // ~ -23 deg
-  const currentPitchRef = useRef<number>(-0.08) // ~ -5 deg
+  const currentYawRef = useRef<number>(-0.4)
+  const currentPitchRef = useRef<number>(-0.08)
   const targetYawRef = useRef<number>(-0.4)
   const targetPitchRef = useRef<number>(-0.08)
   const cameraDistRef = useRef<number>(52)
@@ -194,7 +188,6 @@ export function MinecraftSkinViewer3D({
     }
   }, [])
 
-  // 1. Load skin texture and slice into faces
   useEffect(() => {
     let active = true
     void extractSkinFaces(resolvedSkinUrl).then((res) => {
@@ -217,7 +210,6 @@ export function MinecraftSkinViewer3D({
     }
   }, [resolvedSkinUrl])
 
-  // 1b. Load cape texture and slice into faces
   useEffect(() => {
     let active = true
     if (!capeUrl || capeUrl.trim() === '') {
@@ -234,20 +226,11 @@ export function MinecraftSkinViewer3D({
     }
   }, [capeUrl])
 
-  // 2. Initialize Three.js scene, camera, and lights
   useEffect(() => {
     const container = containerRef.current
     const host = canvasHostRef.current
     if (!container || !host) return
 
-    /*
-     * Canvas dibuat sendiri, bukan lewat JSX. Canvas yang konteks WebGL-nya
-     * sudah dilepas tidak bisa dipakai ulang: `getContext` mengembalikan
-     * konteks yang sama dalam keadaan lost, dan three.js melempar saat membaca
-     * `precision`. React memakai ulang elemen yang sama pada mount kedua
-     * (StrictMode di dev), jadi elemen dari JSX akan mewarisi konteks mati.
-     * Canvas baru per mount membuat siklus lepas-pakai selalu bersih.
-     */
     const canvas = document.createElement('canvas')
     canvas.className = styles.canvas ?? ''
     host.appendChild(canvas)
@@ -269,8 +252,7 @@ export function MinecraftSkinViewer3D({
           canvas,
           alpha: true,
           antialias: false,
-          // `low-power` dapat memaksa driver memakai renderer perangkat lunak
-          // di sebagian mesin Windows, jadi biarkan pilihan pada driver.
+          // Avoid powerPreference: 'low-power', which forces software rendering on some Windows GPUs.
           failIfMajorPerformanceCaveat: false,
         })
       } catch {
@@ -293,15 +275,13 @@ export function MinecraftSkinViewer3D({
     rendererRef.current = renderer
 
     const handleContextLost = (event: Event): void => {
-      // Jangan langsung menyerah: driver Windows bisa memulihkan konteks.
+      // Allow Windows GPU drivers a short window to recover before switching to 2D fallback.
       event.preventDefault()
       contextLostRef.current = true
-      // Kalau konteks tidak kembali, tampilkan pratinjau 2D supaya tidak kosong.
       lostTimerRef.current = window.setTimeout(() => {
         lostTimerRef.current = null
         if (!contextLostRef.current) return
-        // Kanvas yang konteksnya hilang tidak menggambar apa pun; lepaskan
-        // supaya pratinjau 2D di bawahnya benar-benar terlihat.
+        // Detach the dead canvas so the underlying 2D preview becomes visible.
         canvas.remove()
         canvasRef.current = null
         setWebglFailed(true)
@@ -318,9 +298,6 @@ export function MinecraftSkinViewer3D({
     canvas.addEventListener('webglcontextlost', handleContextLost)
     canvas.addEventListener('webglcontextrestored', handleContextRestored)
 
-    // Model memakai MeshBasicMaterial unlit murni tanpa lighting agar warna tekstur piksel skin akurat.
-
-    // Resize observer
     const handleResize = (): void => {
       if (!container || !renderer || !camera) return
       const w = container.clientWidth
@@ -360,7 +337,6 @@ export function MinecraftSkinViewer3D({
     }
   }, [])
 
-  // 3. Build or update character mesh when skinData changes
   useEffect(() => {
     const scene = sceneRef.current
     if (!scene || !skinData) return
@@ -372,11 +348,9 @@ export function MinecraftSkinViewer3D({
     const modelRoot = new THREE.Group()
     modelRoot.position.set(0, 0, 0)
 
-    // ----------------- HEAD GROUP -----------------
     const headGroup = new THREE.Group()
-    headGroup.position.set(0, 24, 0) // Pivot at neck
+    headGroup.position.set(0, 24, 0)
 
-    // Base Head: 8 x 8 x 8
     const headGeo = new THREE.BoxGeometry(8, 8, 8)
     const headMaterials = createBoxMaterials({
       front: baseFaces.headFront,
@@ -390,7 +364,6 @@ export function MinecraftSkinViewer3D({
     headMesh.position.set(0, 4, 0)
     headGroup.add(headMesh)
 
-    // Outer Hat / Hair Overlay: 9 x 9 x 9
     if (hasOverlay.head) {
       const hatGeo = new THREE.BoxGeometry(9, 9, 9)
       const hatMaterials = createBoxMaterials(
@@ -410,11 +383,9 @@ export function MinecraftSkinViewer3D({
     }
     modelRoot.add(headGroup)
 
-    // ----------------- TORSO GROUP -----------------
     const torsoGroup = new THREE.Group()
-    torsoGroup.position.set(0, 12, 0) // Pivot at waist
+    torsoGroup.position.set(0, 12, 0)
 
-    // Base Torso: 8 x 12 x 4
     const torsoGeo = new THREE.BoxGeometry(8, 12, 4)
     const torsoMaterials = createBoxMaterials({
       front: baseFaces.torsoFront,
@@ -428,7 +399,6 @@ export function MinecraftSkinViewer3D({
     torsoMesh.position.set(0, 6, 0)
     torsoGroup.add(torsoMesh)
 
-    // Outer Jacket Overlay: 8.6 x 12.6 x 4.6
     if (hasOverlay.torso) {
       const jacketGeo = new THREE.BoxGeometry(8.6, 12.6, 4.6)
       const jacketMaterials = createBoxMaterials(
@@ -447,27 +417,24 @@ export function MinecraftSkinViewer3D({
       torsoGroup.add(jacketMesh)
     }
 
-    // Cape: 10 x 16 x 1 (standar Minecraft)
     if (capeData) {
       const capeMaterials = createBoxMaterials(capeData)
       const capeGeo = new THREE.BoxGeometry(10, 16, 1)
-      // Pivot di sisi depan-atas cape agar permukaan dalamnya menempel di belakang torso/jacket
+      // Pivot at the top-front edge so the cape swings back away from the torso.
       capeGeo.translate(0, -8, -0.5)
       const capeMesh = new THREE.Mesh(capeGeo, capeMaterials)
       capeMesh.position.set(0, 12, hasOverlay.torso ? -2.35 : -2.1)
-      // Rotasi +X membuat bagian bawah cape (-Y) mengayun ke belakang (-Z) menjauhi tubuh
       capeMesh.rotation.x = 0.16
       torsoGroup.add(capeMesh)
     }
 
     modelRoot.add(torsoGroup)
 
-    // ----------------- RIGHT ARM GROUP -----------------
     const rightArmGroup = new THREE.Group()
-    // Celah 0.02 supaya sisi lengan tidak berimpit dengan sisi torso (z-fighting).
+    // 0.02 gap prevents z-fighting against the torso side faces.
     const armClearance = 0.02
     const armRPivotX = -(4 + armW / 2 + armClearance)
-    rightArmGroup.position.set(armRPivotX, 22, 0) // Pivot at shoulder
+    rightArmGroup.position.set(armRPivotX, 22, 0)
 
     const armRGeo = new THREE.BoxGeometry(armW, 12, 4)
     const armRMaterials = createBoxMaterials({
@@ -496,16 +463,15 @@ export function MinecraftSkinViewer3D({
         true,
       )
       const sleeveRMesh = new THREE.Mesh(sleeveRGeo, sleeveRMaterials)
-      // Geser jaket ke sisi luar supaya tidak menembus torso.
+      // Offset outward so sleeve overlay does not clip through the torso.
       sleeveRMesh.position.set(-0.3, -5, 0)
       rightArmGroup.add(sleeveRMesh)
     }
     modelRoot.add(rightArmGroup)
 
-    // ----------------- LEFT ARM GROUP -----------------
     const leftArmGroup = new THREE.Group()
     const armLPivotX = 4 + armW / 2 + armClearance
-    leftArmGroup.position.set(armLPivotX, 22, 0) // Pivot at shoulder
+    leftArmGroup.position.set(armLPivotX, 22, 0)
 
     const armLGeo = new THREE.BoxGeometry(armW, 12, 4)
     const armLMaterials = createBoxMaterials({
@@ -539,9 +505,8 @@ export function MinecraftSkinViewer3D({
     }
     modelRoot.add(leftArmGroup)
 
-    // ----------------- RIGHT LEG GROUP -----------------
     const rightLegGroup = new THREE.Group()
-    rightLegGroup.position.set(-2 - armClearance, 12, 0) // Pivot at hip
+    rightLegGroup.position.set(-2 - armClearance, 12, 0)
 
     const legRGeo = new THREE.BoxGeometry(4, 12, 4)
     const legRMaterials = createBoxMaterials({
@@ -575,9 +540,8 @@ export function MinecraftSkinViewer3D({
     }
     modelRoot.add(rightLegGroup)
 
-    // ----------------- LEFT LEG GROUP -----------------
     const leftLegGroup = new THREE.Group()
-    leftLegGroup.position.set(2 + armClearance, 12, 0) // Pivot at hip
+    leftLegGroup.position.set(2 + armClearance, 12, 0)
 
     const legLGeo = new THREE.BoxGeometry(4, 12, 4)
     const legLMaterials = createBoxMaterials({
@@ -631,7 +595,6 @@ export function MinecraftSkinViewer3D({
     }
   }, [skinData, isSlim, detectedSlim, capeData])
 
-  // 4. Main Animation & Render Loop
   useEffect(() => {
     if (!isRenderable) return
     let animId: number | null = null
@@ -650,13 +613,11 @@ export function MinecraftSkinViewer3D({
       const camera = cameraRef.current
       const renderer = rendererRef.current
 
-      // Interpolasi yaw dan jarak kamera; pitch dikunci ke 0 (hanya rotasi 360° kiri-kanan)
       currentYawRef.current += (targetYawRef.current - currentYawRef.current) * 0.12
       currentPitchRef.current = 0
       targetPitchRef.current = 0
       cameraDistRef.current += (targetDistRef.current - cameraDistRef.current) * 0.14
 
-      // Orbit kamera horizontal mengitari titik pusat (0, 16, 0)
       if (camera) {
         const yaw = currentYawRef.current
         const dist = cameraDistRef.current
@@ -669,27 +630,21 @@ export function MinecraftSkinViewer3D({
         camera.lookAt(0, 16, 0)
       }
 
-      // Idle animation when not dragging
       if (parts) {
         if (!isDraggingRef.current) {
-          // Slow ambient orbit drift
           targetYawRef.current += 0.0025 * autoRotateSpeed
 
-          // Breathing / slight vertical bobbing
           const breath = Math.sin(elapsedTime * 2.2) * 0.18
           parts.modelRoot.position.y = breath
 
-          // Subtle natural head sway
           parts.headGroup.rotation.y = Math.sin(elapsedTime * 1.0) * 0.05
           parts.headGroup.rotation.x = Math.sin(elapsedTime * 1.4) * 0.03
 
-          // Gentle natural arm swing
           parts.leftArmGroup.rotation.x = Math.sin(elapsedTime * 1.6) * 0.06
           parts.rightArmGroup.rotation.x = -Math.sin(elapsedTime * 1.6) * 0.06
           parts.leftArmGroup.rotation.z = Math.abs(Math.sin(elapsedTime * 2.2)) * 0.02
           parts.rightArmGroup.rotation.z = -Math.abs(Math.sin(elapsedTime * 2.2)) * 0.02
         } else {
-          // Smoothly return body joints to resting neutral pose while dragging
           parts.modelRoot.position.y *= 0.9
           parts.headGroup.rotation.x *= 0.9
           parts.headGroup.rotation.y *= 0.9
@@ -723,7 +678,6 @@ export function MinecraftSkinViewer3D({
     }
   }, [autoRotateSpeed, isRenderable])
 
-  // 5. Mouse and Touch Drag Controls for 360 Rotation
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
     if (!interactive) return
     isDraggingRef.current = true
@@ -738,7 +692,6 @@ export function MinecraftSkinViewer3D({
     const dx = e.clientX - lastMousePosRef.current.x
     lastMousePosRef.current = { x: e.clientX, y: e.clientY }
 
-    // Rotasi hanya horizontal 360 derajat (kiri-kanan saja, tanpa atas-bawah)
     targetYawRef.current += dx * 0.012
     targetPitchRef.current = 0
   }
@@ -749,7 +702,6 @@ export function MinecraftSkinViewer3D({
     try {
       ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
     } catch {
-      // Ignore if pointer capture already ended
     }
   }
 
@@ -759,7 +711,6 @@ export function MinecraftSkinViewer3D({
 
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault()
-      // Clamp zoom distance between 36 and 76
       targetDistRef.current = Math.max(
         36,
         Math.min(76, targetDistRef.current + e.deltaY * 0.05),

@@ -280,7 +280,6 @@ impl<'a> NbtReader<'a> {
         loop {
             let tag_type = self.read_u8()?;
             if tag_type == 0 {
-                // TAG_End
                 break;
             }
             let name = self.read_string()?;
@@ -408,7 +407,7 @@ impl NbtWriter {
             self.write_string(name);
             self.write_payload(tag)?;
         }
-        self.write_u8(0); // TAG_End
+        self.write_u8(0);
         Ok(())
     }
 
@@ -417,7 +416,7 @@ impl NbtWriter {
         name: &str,
         compound: &HashMap<String, NbtTag>,
     ) -> Result<Vec<u8>, LauncherErrorPayload> {
-        self.write_u8(10); // TAG_Compound
+        self.write_u8(10);
         self.write_string(name);
         self.write_compound(compound)?;
         Ok(std::mem::take(&mut self.out))
@@ -430,7 +429,7 @@ impl Default for NbtWriter {
     }
 }
 
-pub const MAX_NBT_UNCOMPRESSED_SIZE: u64 = 32 * 1024 * 1024; // 32 MB max (SC-10 Gzip bomb protection)
+pub const MAX_NBT_UNCOMPRESSED_SIZE: u64 = 32 * 1024 * 1024;
 
 pub fn read_nbt_buffer(
     raw: &[u8],

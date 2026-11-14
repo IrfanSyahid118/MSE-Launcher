@@ -143,7 +143,6 @@ impl DiscordRpcService {
             .unwrap_or_else(Instant::now);
 
         while running.load(Ordering::Relaxed) {
-            // Receive commands with timeout to allow periodic reconnection
             let recv_res = rx.recv_timeout(Duration::from_secs(3));
             let mut state_changed = false;
 
@@ -164,13 +163,10 @@ impl DiscordRpcService {
                     state_changed = true;
                     activity_dirty = true;
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    // Periodic poll
-                }
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
 
-            // Drain any pending commands
             while let Ok(cmd) = rx.try_recv() {
                 match cmd {
                     RpcCommand::Shutdown => {
@@ -208,7 +204,6 @@ impl DiscordRpcService {
                 continue;
             }
 
-            // Connect if not connected
             let mut just_connected = false;
             if client.is_none() {
                 let now = Instant::now();
@@ -228,7 +223,6 @@ impl DiscordRpcService {
                 }
             }
 
-            // Update activity only on state/settings changes or fresh IPC connection
             if should_dispatch_activity(client.is_some(), just_connected, activity_dirty) {
                 if let Some(ref mut c) = client {
                     let apply_res = match &target_state {
@@ -376,7 +370,6 @@ mod tests {
         let running = Arc::clone(&service.running);
         let cloned = service.clone();
 
-        // Dropping a non-last handle must keep the shared worker alive
         drop(cloned);
         std::thread::sleep(Duration::from_millis(20));
         assert!(
@@ -384,7 +377,6 @@ mod tests {
             "Worker must stay alive while another DiscordRpcService clone exists"
         );
 
-        // Dropping the last handle must stop the worker loop even without calling shutdown()
         drop(service);
         for _ in 0..30 {
             if !running.load(Ordering::Relaxed) {

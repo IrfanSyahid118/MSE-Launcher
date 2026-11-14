@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogLine {
-    pub stream: String, // "stdout" | "stderr" | "system"
+    pub stream: String,
     pub line: String,
     pub time: String,
 }
@@ -48,14 +48,12 @@ where
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    // SEC-04 & SEC-07: Bersihkan variabel environment yang dapat memanipulasi JVM atau menginjeksi opsi/agen liar
     cmd.env_remove("JAVA_TOOL_OPTIONS");
     cmd.env_remove("_JAVA_OPTIONS");
     cmd.env_remove("JDK_JAVA_OPTIONS");
     cmd.env_remove("CLASSPATH");
 
-    // FN-01: JANGAN gunakan CREATE_NO_WINDOW pada javaw.exe karena menyebabkan
-    // jendela game GLFW/LWJGL tidak dapat dirender atau disembunyikan oleh Windows.
+    // Do not set CREATE_NO_WINDOW on javaw.exe; it hides LWJGL/GLFW game windows on Windows.
 
     let mut child = cmd.spawn().map_err(|e| {
         LauncherErrorPayload::internal(format!(
@@ -73,7 +71,7 @@ where
     let kill_tx = Arc::new(Mutex::new(Some(kill_tx)));
     let log_cb = Arc::new(on_log);
 
-    // FN-05: 100ms batch buffer untuk mencegah banjir event IPC saat startup game
+    // Batch logs every 100ms to avoid IPC event flooding during game startup.
     let (log_tx, mut log_rx) = tokio::sync::mpsc::channel::<LogLine>(2048);
 
     {
@@ -111,7 +109,6 @@ where
         });
     }
 
-    // Stream stdout
     if let Some(out) = stdout {
         let tx = log_tx.clone();
         tokio::spawn(async move {
@@ -128,7 +125,6 @@ where
         });
     }
 
-    // Stream stderr
     if let Some(err) = stderr {
         let tx = log_tx;
         tokio::spawn(async move {
@@ -145,7 +141,6 @@ where
         });
     }
 
-    // Monitor exit and handle kill signal without holding locks across wait()
     tokio::spawn(async move {
         tokio::select! {
             status = child.wait() => {

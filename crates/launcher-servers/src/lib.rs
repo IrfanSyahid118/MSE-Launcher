@@ -57,11 +57,9 @@ mod tests {
 
         let instance_id = "test-instance";
 
-        // List initial
         let initial = service.list(instance_id).expect("list failed");
         assert!(initial.is_empty());
 
-        // Add
         let server1 = launcher_types::InstanceServerEntry {
             name: "Hypixel".to_string(),
             ip: "mc.hypixel.net".to_string(),
@@ -77,7 +75,6 @@ mod tests {
         assert_eq!(after_add[0].name, "Hypixel");
         assert_eq!(after_add[0].ip, "mc.hypixel.net");
 
-        // Edit
         let server1_edit = launcher_types::InstanceServerEntry {
             name: "Hypixel Network".to_string(),
             ip: "mc.hypixel.net:25565".to_string(),
@@ -93,7 +90,6 @@ mod tests {
         assert_eq!(after_edit[0].name, "Hypixel Network");
         assert_eq!(after_edit[0].ip, "mc.hypixel.net:25565");
 
-        // Remove
         let after_remove = service
             .remove(instance_id, "mc.hypixel.net:25565")
             .expect("remove failed");
@@ -115,8 +111,6 @@ mod tests {
 
     #[test]
     fn test_decode_varint_malformed_overflow() {
-        // 5 consecutive bytes with continuation bit set followed by a 6th byte
-        // In vulnerable code, this shifts val by 35 bits, causing an overflow panic!
         let malformed = [0x80, 0x80, 0x80, 0x80, 0x80, 0x01];
         let result = decode_varint(&malformed, 0);
         assert_eq!(result, None);
@@ -148,10 +142,8 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        // Hostile server task: returns huge packet_len varint (10MB)
         tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
-                // Send huge varint (10_000_000)
                 let huge_varint = encode_varint(10_000_000);
                 use tokio::io::AsyncWriteExt;
                 let _ = socket.write_all(&huge_varint).await;

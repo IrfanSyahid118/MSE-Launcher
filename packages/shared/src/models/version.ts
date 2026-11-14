@@ -60,12 +60,11 @@ export function isVersionCompatibleWithMinecraft(
   versionName?: string,
 ): boolean {
   if (!targetMinecraftVersion) return true
-  // 1. Jika gameVersions didefinisikan dan tidak memuat targetMinecraftVersion, tolak
   if (gameVersions.length > 0 && !gameVersions.includes(targetMinecraftVersion)) {
     return false
   }
 
-  // 2. Deteksi kasus mass-tagging / 'Select All' (misalnya > 25 versi atau memuat versi pre-classic seperti rd-*)
+  // Heuristic for mass-tagged ("Select All") uploads that claim dozens of versions.
   if (
     gameVersions.length > 25 ||
     (gameVersions.length > 10 &&

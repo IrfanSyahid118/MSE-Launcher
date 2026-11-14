@@ -58,7 +58,7 @@ pub fn is_rule_matching_os(rule: &MojangRule, current_os: &str, current_arch: &s
         }
     }
 
-    // Mengabaikan fitur game khusus (demo_user, has_custom_resolution, dll) kecuali dievaluasi eksplisit
+    // Ignore feature-gated rules unless explicitly evaluated.
     if let Some(ref features) = rule.features {
         if !features.is_empty() {
             return false;
@@ -75,7 +75,7 @@ pub fn is_library_allowed(
 ) -> bool {
     let rules = match rules {
         Some(r) if !r.is_empty() => r,
-        _ => return true, // Jika tidak ada aturan, default diizinkan
+        _ => return true,
     };
 
     let mut allowed = false;

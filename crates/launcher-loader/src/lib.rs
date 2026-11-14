@@ -78,7 +78,7 @@ mod tests {
         assert!(index.game_versions.contains(&"1.19.2".to_string()));
         let v_1201 = index.versions_by_game.get("1.20.1").unwrap();
         assert_eq!(v_1201.len(), 2);
-        assert_eq!(v_1201[0], "47.2.20"); // descending order
+        assert_eq!(v_1201[0], "47.2.20");
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
             release_time: None,
             libraries: vec![
                 MojangLibrary {
-                    name: "org.ow2.asm:asm:9.6".into(), // overrides asm 9.3
+                    name: "org.ow2.asm:asm:9.6".into(),
                     ..Default::default()
                 },
                 MojangLibrary {
@@ -134,7 +134,6 @@ mod tests {
             Some("net.fabricmc.loader.impl.launch.knot.KnotClient")
         );
         assert_eq!(merged.libraries.len(), 3);
-        // asm should now be 9.6
         let asm = merged
             .libraries
             .iter()

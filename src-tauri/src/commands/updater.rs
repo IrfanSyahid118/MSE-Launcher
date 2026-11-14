@@ -492,8 +492,7 @@ pub async fn updater_install(
     let install_mode = detect_current_install_mode();
     let current_version = env!("CARGO_PKG_VERSION");
 
-    // Verifikasi pembaruan selalu berasal dari latest.json resmi dengan SHA-256 valid,
-    // bukan mempercayai parameter mentah dari IPC frontend.
+    // Require updates to match the cached SHA-256-verified official manifest.
     let cached_verified = state.verified_update.read().await.clone();
     let verified = match cached_verified {
         Some(ref res)
@@ -690,7 +689,7 @@ mod tests {
             InstallMode::Installer
         );
 
-        // explicit portable marker overrides uninstall.exe if both present
+        // Explicit portable.txt marker takes precedence over uninstall.exe.
         std::fs::write(generic_dir.join("portable.txt"), b"1").unwrap();
         assert_eq!(
             detect_install_mode_for_path(&generic_exe),

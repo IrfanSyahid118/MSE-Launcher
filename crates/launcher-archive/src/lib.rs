@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
 pub const MAX_ARCHIVE_ENTRIES: usize = 50_000;
-pub const MAX_UNCOMPRESSED_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GB (SEC-05)
+pub const MAX_UNCOMPRESSED_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Mengekstrak seluruh atau sebagian berkas ZIP / JAR ke direktori tujuan.
 /// Memiliki proteksi penuh terhadap kerentanan Zip-Slip (SEC-01) dan Zip Bomb (SEC-05).
@@ -96,12 +96,10 @@ pub fn extract_zip_with_limit(
                 })?
                 .to_string();
 
-            // Cek pola eksklusi (misal: META-INF/, .git/)
             if exclusions.iter().any(|ex| raw_name.starts_with(ex)) {
                 continue;
             }
 
-            // Tolak entri symlink Unix di dalam ZIP (S_IFLNK = 0o120000)
             if entry
                 .unix_mode()
                 .is_some_and(|mode| (mode & 0o170000) == 0o120000)
@@ -112,7 +110,6 @@ pub fn extract_zip_with_limit(
                 )));
             }
 
-            // Tolak backslash eksplisit di ZIP lintas OS serta pastikan enclosed_name valid
             if raw_name.contains('\\') || raw_name.contains('\0') {
                 return Err(LauncherErrorPayload::invalid_input(format!(
                     "Entri ZIP memuat karakter separator/NUL terlarang: '{}'",
@@ -181,7 +178,6 @@ pub fn extract_zip_with_limit(
                     })?;
                 }
 
-                // Verifikasi parent kanonikal & bebas symlink SEBELUM membuat berkas
                 launcher_security::ensure_descendants_no_symlink(destination, parent)?;
                 if !launcher_security::canonical_starts_with(parent, &canonical_dest)? {
                     return Err(LauncherErrorPayload::invalid_input(
@@ -196,7 +192,6 @@ pub fn extract_zip_with_limit(
                     ));
                 }
 
-                // Jika berkas reguler sudah ada dari ekstraksi JAR native lain, hapus aman (tolak jika symlink/dir)
                 if let Ok(meta) = fs::symlink_metadata(&target_path) {
                     if meta.file_type().is_symlink() || meta.file_type().is_dir() {
                         return Err(LauncherErrorPayload::invalid_input(
@@ -206,10 +201,8 @@ pub fn extract_zip_with_limit(
                     launcher_security::safe_remove_file_within(&canonical_dest, &target_path)?;
                 }
 
-                // Buka secara eksklusif (create_new) agar tidak pernah memotong target symlink
                 let mut out_file = launcher_security::safe_create_new_file(&target_path, false)?;
 
-                // Batasi pembacaan maksimal remaining_bytes + 1 agar berkas raksasa tidak ditulis tak terbatas ke disk
                 let mut limited = (&mut entry).take(remaining_bytes.saturating_add(1));
                 let copied = io::copy(&mut limited, &mut out_file).map_err(|e| {
                     LauncherErrorPayload::file_system(format!("Gagal mengekstrak isi entri: {}", e))
@@ -224,7 +217,6 @@ pub fn extract_zip_with_limit(
 
                 total_uncompressed_bytes = total_uncompressed_bytes.saturating_add(copied);
 
-                // Verifikasi kanonikal pasca pembuatan berkas
                 if !launcher_security::canonical_starts_with(&target_path, &canonical_dest)? {
                     let _ = fs::remove_file(&target_path);
                     return Err(LauncherErrorPayload::invalid_input(
@@ -241,11 +233,9 @@ pub fn extract_zip_with_limit(
     match res {
         Ok(()) => Ok(extracted_paths),
         Err(e) => {
-            // Bersihkan semua berkas yang sempat dibuat jika terjadi kegagalan
             for path in &extracted_paths {
                 let _ = fs::remove_file(path);
             }
-            // Pangkas rekursif semua folder kosong di dalam destination
             fn prune_empty_subdirs(dir: &Path, base: &Path) {
                 if let Ok(entries) = fs::read_dir(dir) {
                     for entry in entries.flatten() {
@@ -279,7 +269,6 @@ mod tests {
         let zip_path = temp_dir.path().join("test.zip");
         let dest_dir = temp_dir.path().join("extracted");
 
-        // Buat zip dummy
         {
             let file = File::create(&zip_path).unwrap();
             let mut zip = ZipWriter::new(file);
@@ -294,7 +283,6 @@ mod tests {
             zip.finish().unwrap();
         }
 
-        // Ekstrak dengan eksklusi META-INF/
         let extracted = extract_zip(&zip_path, &dest_dir, &["META-INF/"]).unwrap();
 
         assert_eq!(extracted.len(), 1);
@@ -340,7 +328,6 @@ mod tests {
             .find(|l| l.starts_with("resourcePacks:"))
             .unwrap();
 
-        // Valid Minecraft JSON array must not have trailing comma like ["file/...",]
         assert!(
             !pack_line.contains(",]"),
             "Invalid JSON in options.txt generated with trailing comma: '{}'",
@@ -361,15 +348,12 @@ mod tests {
             let options = SimpleFileOptions::default();
 
             zip.start_file("huge.dat", options).unwrap();
-            // Tulis 100 KB data
             zip.write_all(&vec![b'A'; 100_000]).unwrap();
             zip.finish().unwrap();
         }
 
-        // Batasi hanya 1000 byte
         let res = extract_zip_with_limit(&zip_path, &dest_dir, &[], 1_000);
         assert!(res.is_err(), "Zip melebihi batas harus gagal");
-        // Berkas parsial tidak boleh tertinggal di direktori tujuan
         assert!(
             !dest_dir.join("huge.dat").exists(),
             "Berkas parsial harus dibersihkan"
@@ -393,7 +377,6 @@ mod tests {
             zip.finish().unwrap();
         }
 
-        // Limit to 500 bytes so it fails
         let res = extract_zip_with_limit(&zip_path, &dest_dir, &[], 500);
         assert!(res.is_err(), "Must fail due to limit");
         assert!(
@@ -404,7 +387,6 @@ mod tests {
 
     #[test]
     fn test_ps06_zip_rejects_backslash_reserved_symlink_case_collision_and_preexisting_symlink() {
-        // 1. Backslash traversal entry
         {
             let temp_dir = tempdir().unwrap();
             let zip_path = temp_dir.path().join("backslash.zip");
@@ -419,7 +401,6 @@ mod tests {
             assert!(!temp_dir.path().join("escaped.dll").exists());
         }
 
-        // 2. Windows reserved name entry (including superscript)
         {
             let temp_dir = tempdir().unwrap();
             let zip_path = temp_dir.path().join("reserved.zip");
@@ -433,7 +414,6 @@ mod tests {
             assert!(extract_zip(&zip_path, &dest_dir, &[]).is_err());
         }
 
-        // 3. Unix symlink entry (S_IFLNK = 0o120000)
         {
             let temp_dir = tempdir().unwrap();
             let zip_path = temp_dir.path().join("symlink_mode.zip");
@@ -446,7 +426,6 @@ mod tests {
             assert!(extract_zip(&zip_path, &dest_dir, &[]).is_err());
         }
 
-        // 4. Case-folded duplicate entry collision
         {
             let temp_dir = tempdir().unwrap();
             let zip_path = temp_dir.path().join("case_collision.zip");

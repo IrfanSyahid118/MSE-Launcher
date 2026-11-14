@@ -92,7 +92,6 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
             listener.set_nonblocking(false).ok();
-            // Handle up to 24 requests or exit on empty/timeout
             for _ in 0..24 {
                 let Ok((mut stream, _)) = listener.accept() else {
                     break;
@@ -226,7 +225,6 @@ mod tests {
             })
             .unwrap();
 
-        // Build real zip archive in memory with AdventureWorld/level.dat
         let mut cursor = std::io::Cursor::new(Vec::new());
         {
             let mut zw = zip::ZipWriter::new(&mut cursor);
@@ -379,9 +377,6 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let base = format!("http://127.0.0.1:{}", addr.port());
 
-        // Build two tiny CurseForge modpack ZIP archives in memory:
-        // 1) manifest referencing projectID=777, fileID=888 (returns HTTP 404)
-        // 2) manifest referencing projectID=555, fileID=666 (returns downloadUrl: null)
         let make_cf_pack = |files_json: &str| -> Vec<u8> {
             let mut buf = Vec::new();
             {
@@ -452,7 +447,6 @@ mod tests {
         let http = launcher_net::HttpClient::new();
         let api_base = format!("{}/v1", base);
 
-        // Case 1: errored mod metadata must fail/report instead of silently installing empty modpack
         let res_err = modpack::install_modpack_with_base(
             &paths,
             &http,
@@ -473,7 +467,6 @@ mod tests {
             res_err.message
         );
 
-        // Case 2: distribution-blocked mod (downloadUrl == null) must return DistributionBlocked naming it
         let res_blocked = modpack::install_modpack_with_base(
             &paths,
             &http,
@@ -647,7 +640,6 @@ mod tests {
             }
         }
 
-        // Write proxy config into integrations.json and verify proxy override detection
         launcher_storage::write_json_atomic(
             &paths.root.join("integrations.json"),
             &serde_json::json!({ "curseforgeProxyUrl": "https://cf-proxy.example.workers.dev" }),
@@ -663,7 +655,6 @@ mod tests {
             assert_eq!(proxy_status.curseforge.source.as_deref(), Some("proxy"));
         }
 
-        // Verify download_url == None does not synthesize edge.forgecdn.net (OS-14)
         let blocked_file = curseforge::CfFile {
             id: 4567890,
             mod_id: 123456,
@@ -693,7 +684,6 @@ mod tests {
         )]);
 
         let http = launcher_net::HttpClient::new();
-        // Official API_BASE with empty key must still fail before making HTTP request
         let official_err = curseforge::get_curseforge_file(&http, "", "42", 99)
             .await
             .expect_err("Direct CurseForge API without key must return ProviderNotConfigured");
@@ -702,7 +692,6 @@ mod tests {
             launcher_types::ErrorCode::ProviderNotConfigured
         );
 
-        // Custom proxy base with empty client key must succeed
         let proxy_base = format!("{}/v1", base);
         let file = curseforge::get_curseforge_file_with_base(&http, &proxy_base, "", "42", 99)
             .await

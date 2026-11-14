@@ -20,7 +20,7 @@ pub fn assemble_classpath(detail: &MojangVersionDetail, paths: &DataPaths) -> Ve
 
     let mut classpath = Vec::new();
 
-    // 1. Libraries (Loader, Mixin, dan dependensi ditempatkan di depan agar patch berfungsi)
+    // Place loader and dependency JARs before the client JAR so class patching works.
     for lib in &detail.libraries {
         if !is_library_allowed(lib.rules.as_deref(), current_os, current_arch) {
             continue;
@@ -42,7 +42,6 @@ pub fn assemble_classpath(detail: &MojangVersionDetail, paths: &DataPaths) -> Ve
                 }
             }
         } else {
-            // Beberapa loader atau versi lama mendefinisikan library tanpa object downloads eksplisit
             let rel_path = VersionService::maven_to_path(&lib.name);
             if let Ok(jar_path) = launcher_security::safe_subpath(&paths.libraries_dir, &rel_path) {
                 if jar_path.exists() {
@@ -52,7 +51,6 @@ pub fn assemble_classpath(detail: &MojangVersionDetail, paths: &DataPaths) -> Ve
         }
     }
 
-    // 2. Client JAR ditempatkan di akhir setelah dependensi
     if let Ok(ver_dir) = launcher_security::safe_subpath(&paths.versions_dir, &detail.id) {
         if let Ok(client_jar) =
             launcher_security::safe_subpath(&ver_dir, &format!("{}.jar", detail.id))
@@ -78,7 +76,6 @@ pub fn assemble_classpath(detail: &MojangVersionDetail, paths: &DataPaths) -> Ve
         }
     }
 
-    // Buang duplikasi jika ada
     let mut unique = std::collections::HashSet::new();
     classpath.retain(|p| unique.insert(p.clone()));
 

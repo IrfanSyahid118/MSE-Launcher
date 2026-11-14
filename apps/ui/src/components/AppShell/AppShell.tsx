@@ -122,7 +122,6 @@ function ShellLayout(): ReactNode {
         setLaunchProgress(progress)
         return
       }
-      // Pekerjaan instalasi lain tampil di dock bawah.
       const jobs = useAppStore.getState().installJobs
       const job = jobs.find((entry) => entry.taskId === taskId)
       if (job) {
@@ -145,14 +144,13 @@ function ShellLayout(): ReactNode {
         setLaunchTaskId(null)
         setLaunchProgress(null)
         setIsGameRunning(true)
-        // Launch menyimpan versi dan lastPlayedAt ke instance.json.
+        // Refresh instances so updated lastPlayedAt and version appear.
         void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
         return
       }
       const jobs = useAppStore.getState().installJobs
       const job = jobs.find((entry) => entry.taskId === taskId)
       if (job) {
-        // Hasil instalasi modpack berupa instance baru; segarkan daftarnya.
         void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
         pushToast(t('browse.installDone', { title: job.title }))
         removeInstallJob(taskId)
@@ -219,13 +217,12 @@ function ShellLayout(): ReactNode {
       if (!Array.isArray(incoming) || incoming.length === 0) return
       const extras: LogLine[] = []
       for (const line of incoming) {
-        // Menu utama tidak selalu menulis log lagi setelah ini; beri penanda
-        // supaya konsol tidak terlihat menggantung.
+        // Game may stop logging once the main menu loads; add a ready marker.
         if (!menuAnnounced && /textures-atlas|Narrator library/i.test(line.line)) {
           menuAnnounced = true
           extras.push(systemLine(t('console.menuReached')))
         }
-        // Akun offline memang tidak bisa memakai Realms; peringatannya normal.
+        // Offline accounts always trigger benign Realms authorization warnings.
         if (!realmsNoted && /Could not authorize you against Realms server|Failed to parse into SignedJWT/i.test(line.line)) {
           realmsNoted = true
           extras.push(systemLine(t('console.realmsIgnored')))

@@ -445,7 +445,6 @@ where
             let _ = fs::remove_dir_all(&staging_dir);
         })?;
 
-    // Download modpack archive
     on_progress("Mengunduh arsip modpack...", 1, 3);
     let on_p_arch = on_progress.clone();
     if let Err(e) = downloader
@@ -550,7 +549,6 @@ where
                         f.path
                     )));
                 }
-                // SEC-01 & SC-09: Validasi path relatif modpack untuk mencegah arbitrary file write
                 let dest = launcher_security::safe_subpath(&mc_dir, &f.path).map_err(|_| {
                     let _ = instances.remove(&new_inst.id);
                     let _ = launcher_security::safe_remove_dir_all_within(
@@ -743,7 +741,6 @@ where
     let mc_dir =
         launcher_security::safe_subpath(&paths.instances_dir, &instance.id)?.join("minecraft");
 
-    // Copy overrides folder
     let copy_res = if overrides_dir.exists() && overrides_dir.is_dir() {
         launcher_security::ensure_dir_within(&paths.instances_dir, &mc_dir, false).and_then(|_| {
             copy_recursive(&overrides_dir, &mc_dir).map_err(|e| {
@@ -764,7 +761,6 @@ where
         return Err(e);
     }
 
-    // Download mod files
     if !download_items.is_empty() {
         let total_mods = download_items.len() as u32;
         let on_p_mods = on_progress.clone();
@@ -785,7 +781,6 @@ where
             )
             .await
         {
-            // FN-11: Rollback instance on download failure
             let _ = instances.remove(&instance.id);
             let _ = fs::remove_dir_all(paths.instances_dir.join(&instance.id));
             let _ = fs::remove_dir_all(&staging_dir);
@@ -802,7 +797,6 @@ where
 
     on_progress("Menyelesaikan konfigurasi instance modpack...", 3, 3);
 
-    // Update instance content
     instance.content = content_entries;
     if let Err(e) = instances.update(instance.clone()) {
         let _ = instances.remove(&instance.id);
@@ -811,7 +805,6 @@ where
         return Err(e);
     }
 
-    // Cleanup staging
     let _ = fs::remove_dir_all(&staging_dir);
 
     Ok(instance)

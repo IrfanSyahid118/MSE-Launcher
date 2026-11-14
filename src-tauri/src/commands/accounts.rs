@@ -116,7 +116,6 @@ fn write_skin_file_safe(
 }
 
 pub fn enrich_account(acc: &mut Account, skins_dir: &std::path::Path) {
-    // 1. Ubah skin lokal tervalidasi menjadi data:image/png;base64,... (hanya dari skins_dir, bukan path sembarang)
     if let Some(bytes) = read_cached_skin_file(skins_dir, &acc.id, ".png") {
         acc.skin_url = Some(format!("data:image/png;base64,{}", encode_base64(&bytes)));
     } else if let Some(ref mut url) = acc.skin_url {
@@ -127,7 +126,6 @@ pub fn enrich_account(acc: &mut Account, skins_dir: &std::path::Path) {
         }
     }
 
-    // 2. Ubah cape lokal tervalidasi menjadi data:image/png;base64,... jika ada
     if let Some(bytes) = read_cached_skin_file(skins_dir, &acc.id, "_cape.png") {
         acc.cape_url = Some(format!("data:image/png;base64,{}", encode_base64(&bytes)));
     } else if let Some(ref mut url) = acc.cape_url {
@@ -138,7 +136,6 @@ pub fn enrich_account(acc: &mut Account, skins_dir: &std::path::Path) {
         }
     }
 
-    // 3. Pastikan URL cape di daftar owned capes menggunakan https
     for c in &mut acc.capes {
         if c.url.starts_with("http://") {
             c.url = c.url.replace("http://", "https://");
@@ -251,7 +248,6 @@ pub fn auth_create_offline(
 ) -> Result<Account, LauncherErrorPayload> {
     let account = state.accounts.create_offline(&username)?;
 
-    // Jika belum ada akun aktif di settings, set akun ini menjadi aktif
     let current_settings = state.settings.get();
     if current_settings.active_account_id.is_none() {
         let _ = state.settings.set(SettingsPatch {
@@ -296,7 +292,6 @@ pub async fn auth_sign_out(
     let _ = state.auth.sign_out(&account_id).await;
     state.accounts.remove(&account_id)?;
 
-    // Jika akun yang dihapus adalah akun aktif, hapus dari settings
     let current_settings = state.settings.get();
     if current_settings.active_account_id.as_deref() == Some(&account_id) {
         let _ = state.settings.set(SettingsPatch {
@@ -618,7 +613,6 @@ mod tests {
         let skins_dir = paths.root.join("skins");
         let acc = accounts.create_offline("SkinTester").unwrap();
 
-        // Arbitrary local filesystem path string must be rejected
         let secret_file = temp_root.join("local-secret.png");
         std::fs::create_dir_all(&temp_root).unwrap();
         std::fs::write(&secret_file, b"\x89PNG\r\n\x1a\nFAKEPNG").unwrap();
@@ -634,7 +628,6 @@ mod tests {
         );
         assert!(raw_path_res.is_err(), "Raw local path must be rejected");
 
-        // Non-PNG bytes in data URI must be rejected
         let non_png_res = update_skin_with_store(
             &accounts,
             &skins_dir,
@@ -647,7 +640,6 @@ mod tests {
         );
         assert!(non_png_res.is_err(), "Non-PNG bytes must be rejected");
 
-        // Valid PNG signature succeeds
         let valid_png_res = update_skin_with_store(
             &accounts,
             &skins_dir,

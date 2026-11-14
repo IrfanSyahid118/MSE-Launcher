@@ -52,7 +52,6 @@ pub fn replace_variables(template: &str, variables: &HashMap<&str, &str>) -> Str
 }
 
 pub fn is_allowed_jvm_arg(clean: &str) -> bool {
-    // Layer 1: Strict allowlist check
     let is_allowed_pattern = if let Some(stripped) = clean.strip_prefix("-XX:") {
         stripped
             .chars()
@@ -83,7 +82,6 @@ pub fn is_allowed_jvm_arg(clean: &str) -> bool {
         return false;
     }
 
-    // Layer 2: Defense-in-depth blocklist check
     if clean.starts_with('@') {
         return false;
     }
@@ -160,7 +158,6 @@ pub fn expand_arguments_json(
         }
 
         if let Some(obj) = item.as_object() {
-            // Cek rules jika ada
             if let Some(rules_val) = obj.get("rules").and_then(|r| r.as_array()) {
                 let rules: Vec<launcher_version::MojangRule> =
                     serde_json::from_value(serde_json::Value::Array(rules_val.clone()))
@@ -244,15 +241,12 @@ mod tests {
     fn test_forbidden_jvm_args() {
         let custom = "-XX:+UseG1GC -Xmx8G -cp hacked.jar -Djava.library.path=bad -Djava.system.class.loader=Evil -Djava.security.properties=evil.props -Djavax.net.ssl.trustStore=evil.jks -Xlog:all=trace:file=evil.log -XX:HeapDumpPath=dump.hprof --add-modules=ALL-SYSTEM -Dmyprop=true @injected_argfile.txt -XX:Flags=options.txt -XX:VMOptionsFile=evil.vmoptions arbitrary_script.sh --malicious-flag --add-opens=java.base/java.lang=ALL-UNNAMED";
         let filtered = get_preset_jvm_args(JvmPreset::Custom, custom);
-        // Allowlist accepted
         assert!(filtered.contains(&"-XX:+UseG1GC".to_string()));
         assert!(filtered.contains(&"-Dmyprop=true".to_string()));
         assert!(filtered.contains(&"--add-opens=java.base/java.lang=ALL-UNNAMED".to_string()));
-        // Allowlist rejected non-matching tokens
         assert!(!filtered.iter().any(|a| a == "arbitrary_script.sh"));
         assert!(!filtered.iter().any(|a| a == "--malicious-flag"));
         assert!(!filtered.iter().any(|a| a.starts_with("--add-modules")));
-        // Blocklist layer rejected
         assert!(!filtered.iter().any(|a| a.starts_with("-Xmx")));
         assert!(!filtered.iter().any(|a| a.starts_with("-cp")));
         assert!(!filtered
@@ -284,15 +278,12 @@ mod tests {
 
     #[test]
     fn test_should_use_argfile() {
-        // Java 8 tidak boleh argfile
         assert!(!should_use_argfile(8, 100, true));
         assert!(!should_use_argfile(8, 5000, true));
 
-        // Java 17 selalu argfile jika has_access_token = true
         assert!(should_use_argfile(17, 100, true));
         assert!(!should_use_argfile(17, 100, false));
 
-        // Java 17 argfile jika panjang > 2048 chars meski tanpa token
         assert!(should_use_argfile(17, 3000, false));
     }
 
@@ -318,7 +309,6 @@ mod tests {
             .unwrap()
             .starts_with("args-"));
 
-        // Simulate startup sweep
         for entry in std::fs::read_dir(instance_dir).unwrap().flatten() {
             let p = entry.path();
             if let Some(name) = p.file_name().and_then(|s| s.to_str()) {

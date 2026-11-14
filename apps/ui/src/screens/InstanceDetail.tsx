@@ -319,7 +319,6 @@ export function InstanceDetail(): ReactNode {
   }, [updatesQuery.data])
   const worldsQuery = useContentWorlds(id ?? '', activeTab === 'worlds')
 
-  // Filter content per kategori
   const mods = useMemo(
     () => (instance?.content ?? []).filter((entry) => entry.type === 'mod'),
     [instance?.content],
@@ -587,7 +586,6 @@ export function InstanceDetail(): ReactNode {
     )
   }
 
-  // Filter teks untuk pencarian item di dalam tab aktif
   const term = searchFilter.trim().toLowerCase()
   const filteredMods = mods.filter(
     (m) => term === '' || m.fileName.toLowerCase().includes(term),
@@ -703,7 +701,6 @@ export function InstanceDetail(): ReactNode {
         setCopiedIp((prev) => (prev === ip ? null : prev))
       }, 2000)
     } catch {
-      // clipboard might fail in test env
     }
   }
 
@@ -932,7 +929,6 @@ export function InstanceDetail(): ReactNode {
       </div>
 
       <div className={styles.content}>
-        {/* ===================== TAB 1: OVERVIEW ===================== */}
         {activeTab === 'overview' ? (
           <GlassCard tone="strong" className={styles.card}>
             <div className={styles.field}>
@@ -984,7 +980,6 @@ export function InstanceDetail(): ReactNode {
           </GlassCard>
         ) : null}
 
-        {/* ===================== TAB 2: MODS ===================== */}
         {activeTab === 'mods' && !isVanilla ? (
           <GlassCard tone="strong" className={styles.card}>
             <div className={styles.subHeader}>
@@ -1188,7 +1183,6 @@ export function InstanceDetail(): ReactNode {
           </GlassCard>
         ) : null}
 
-        {/* ===================== TAB 3: WORLDS ===================== */}
         {activeTab === 'worlds' ? (
           <GlassCard tone="strong" className={styles.card}>
             <div className={styles.subHeader}>
@@ -1328,7 +1322,6 @@ export function InstanceDetail(): ReactNode {
           </GlassCard>
         ) : null}
 
-        {/* ===================== TAB: SERVERS ===================== */}
         {activeTab === 'servers' ? (
           <div className={styles.serverSection}>
             <div className={styles.serverToolbar}>
@@ -1620,7 +1613,6 @@ export function InstanceDetail(): ReactNode {
           </div>
         ) : null}
 
-        {/* ===================== TAB 4: RESOURCE PACKS ===================== */}
         {activeTab === 'resourcepacks' ? (
           <GlassCard tone="strong" className={styles.card}>
             <div className={styles.subHeader}>
@@ -1783,7 +1775,6 @@ export function InstanceDetail(): ReactNode {
           </GlassCard>
         ) : null}
 
-        {/* ===================== TAB: SHADERS ===================== */}
         {activeTab === 'shaders' && !isVanilla ? (
           <GlassCard tone="strong" className={styles.card}>
             <div className={styles.subHeader}>
@@ -1946,7 +1937,6 @@ export function InstanceDetail(): ReactNode {
           </GlassCard>
         ) : null}
 
-        {/* ===================== TAB 5: DATAPACKS ===================== */}
         {isDatapackSupported && activeTab === 'datapacks' ? (
           <GlassCard tone="strong" className={styles.card}>
             <div className={styles.subHeader}>
@@ -2098,7 +2088,6 @@ export function InstanceDetail(): ReactNode {
           </GlassCard>
         ) : null}
 
-        {/* ===================== TAB 7: SETTINGS ===================== */}
         {activeTab === 'settings' ? (
           <GlassCard tone="strong" className={styles.card}>
             <div className={styles.field}>

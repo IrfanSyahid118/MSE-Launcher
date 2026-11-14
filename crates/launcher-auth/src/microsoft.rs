@@ -177,7 +177,7 @@ impl MicrosoftAuthService {
             }
         }
 
-        // Default public client id untuk Minecraft Device Code (resmi di-allowlist oleh Mojang)
+        // Public Minecraft device-code client ID allowlisted by Mojang.
         Some("c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb".to_string())
     }
 
@@ -423,7 +423,6 @@ impl MicrosoftAuthService {
         existing_account: Option<&Account>,
         (xbox_user_url, xsts_url, mc_login_url, mc_profile_url): (&str, &str, &str, &str),
     ) -> Result<Account, LauncherErrorPayload> {
-        // 1. Xbox Live User Auth
         let xbox_res = self
             .http
             .client()
@@ -466,7 +465,6 @@ impl MicrosoftAuthService {
         let uhs = first_claim.uhs.clone();
         let xuid = first_claim.xid.clone();
 
-        // 2. XSTS Authorize
         let xsts_res = self
             .http
             .client()
@@ -517,7 +515,6 @@ impl MicrosoftAuthService {
             ))
         })?;
 
-        // 3. Minecraft Login With Xbox
         let mc_res = self
             .http
             .client()
@@ -550,7 +547,6 @@ impl MicrosoftAuthService {
             ))
         })?;
 
-        // 4. Fetch Minecraft Profile
         let profile_res = self
             .http
             .client()
@@ -594,7 +590,6 @@ impl MicrosoftAuthService {
 
         let refresh_token_val = ms_refresh_token.unwrap_or_default();
 
-        // Simpan token ke DPAPI SecretStore (SEC-03: Token HANYA disimpan di vault rahasia terenkripsi)
         let secret_key = format!("tokens:{}", account_id);
         let secret_payload = serde_json::to_string(&AccountTokens {
             access_token: mc_data.access_token.clone(),
@@ -655,7 +650,6 @@ impl MicrosoftAuthService {
             })
             .collect();
 
-        // Cache skin dan cape secara lokal ke direktori skins secara aman (PS-12)
         if launcher_security::validate_instance_id(&account_id).is_ok() {
             let skins_dir = self.paths.root.join("skins");
             if launcher_security::ensure_dir_within(&self.paths.root, &skins_dir, true).is_ok() {
@@ -704,7 +698,6 @@ impl MicrosoftAuthService {
             capes: owned_capes,
         };
 
-        // Redact token sebelum menyimpan ke accounts.json di disk (SEC-03)
         let mut account_for_disk = account.clone();
         account_for_disk.tokens = None;
         self.accounts.save_account(account_for_disk)?;
@@ -736,7 +729,6 @@ impl MicrosoftAuthService {
             LauncherErrorPayload::auth_failed(format!("Gagal membaca token: {}", e))
         })?;
 
-        // Periksa expired, jika perlu refresh sesi
         let needs_refresh = if let Some(ref exp_str) = account.expires_at {
             if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(exp_str) {
                 exp.with_timezone(&chrono::Utc) <= chrono::Utc::now() + chrono::Duration::minutes(5)
@@ -759,7 +751,6 @@ impl MicrosoftAuthService {
             tokens.access_token
         };
 
-        // Ambil profil resmi Minecraft
         let profile_url = "https://api.minecraftservices.com/minecraft/profile";
         let resp = self
             .http
@@ -927,7 +918,6 @@ impl MicrosoftAuthService {
                 )));
             }
 
-            // Cari cape yang cocok di account.capes
             let mut matching_url: Option<String> = None;
             for c in &mut account.capes {
                 if c.id == cid {
@@ -949,7 +939,6 @@ impl MicrosoftAuthService {
                 }
             }
         } else {
-            // Unequip cape
             let api_url = "https://api.minecraftservices.com/minecraft/profile/capes/active";
             let _ = self
                 .http
@@ -1017,7 +1006,6 @@ mod tests {
         let paths = DataPaths::new(tmp.path());
         let accounts = AccountsStore::new(paths.clone());
         let secrets = SecretStore::new(paths.secrets_file.clone());
-        // Replace accounts.json with a directory so save_account fails at write_json_atomic
         let _ = std::fs::remove_file(&paths.accounts_file);
         std::fs::create_dir_all(&paths.accounts_file).unwrap();
 

@@ -19,7 +19,7 @@ use crate::rules::is_library_allowed;
 pub const MOJANG_VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 
-const MANIFEST_CACHE_TTL: Duration = Duration::from_secs(10 * 60); // 10 menit
+const MANIFEST_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone)]
 pub struct VersionService {
@@ -38,7 +38,6 @@ impl VersionService {
     pub async fn list_versions(&self) -> Result<Vec<MinecraftVersionInfo>, LauncherErrorPayload> {
         let manifest = self.fetch_manifest_cached().await?;
 
-        // Cek versi mana saja yang sudah terpasang di disk lokal
         let installed_versions = self.scan_installed_versions();
 
         let infos = manifest
@@ -107,7 +106,6 @@ impl VersionService {
             }
         }
 
-        // Ambil dari server Mojang jika cache kosong atau kedaluwarsa
         let fresh = self
             .http
             .get_json::<MojangVersionList>(MOJANG_VERSION_MANIFEST_URL)
@@ -131,7 +129,6 @@ impl VersionService {
             }
         }
 
-        // Cari URL versi dari manifest
         let manifest = self.fetch_manifest_cached().await?;
         let entry = manifest
             .versions
@@ -174,7 +171,6 @@ impl VersionService {
     ) -> Result<Vec<DownloadTask>, LauncherErrorPayload> {
         let mut tasks = Vec::new();
 
-        // 1. Client JAR
         let client_version_id = detail.inherits_from.as_deref().unwrap_or(&detail.id);
         launcher_security::validate_safe_single_component(client_version_id)?;
         if let Some(ref downloads) = detail.downloads {
@@ -204,14 +200,12 @@ impl VersionService {
             }
         }
 
-        // 2. Libraries (dievaluasi dinamis sesuai OS & arsitektur host)
         for lib in &detail.libraries {
             if !is_library_allowed(lib.rules.as_deref(), current_os, current_arch) {
                 continue;
             }
 
             if let Some(ref downloads) = lib.downloads {
-                // Artifact utama
                 if let Some(ref artifact) = downloads.artifact {
                     let rel_path = artifact
                         .path
@@ -250,7 +244,6 @@ impl VersionService {
                     });
                 }
 
-                // Natives classifiers
                 if let Some(ref classifiers) = downloads.classifiers {
                     let native_key = lib
                         .natives
@@ -297,7 +290,6 @@ impl VersionService {
                     }
                 }
             } else {
-                // Library tanpa downloads object eksplisit (seperti Fabric, Quilt, atau loader libraries)
                 let rel_path = Self::maven_to_path(&lib.name);
                 let dest = launcher_security::safe_subpath(&self.paths.libraries_dir, &rel_path)?;
 

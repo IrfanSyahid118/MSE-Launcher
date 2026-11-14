@@ -233,7 +233,7 @@ pub fn to_content_version(f: &CfFile) -> ContentVersion {
         }
     }
 
-    // Patuhi flag distribusi pihak ketiga dari CurseForge (jangan mensintesis URL CDN saat null).
+    // Preserve null when CurseForge disallows third-party distribution; never synthesize CDN URLs.
     let download_url = f.download_url.clone();
 
     ContentVersion {
@@ -293,10 +293,10 @@ pub(crate) async fn search_curseforge_with_base(
     }
 
     let sort_field = match query.sort {
-        Some(ContentSort::Relevance) | None => "1", // Featured / Relevance
-        Some(ContentSort::Downloads) => "6",        // TotalDownloads
-        Some(ContentSort::Updated) => "3",          // LastUpdated
-        Some(ContentSort::Newest) => "2",           // Popularity / ReleaseDate
+        Some(ContentSort::Relevance) | None => "1",
+        Some(ContentSort::Downloads) => "6",
+        Some(ContentSort::Updated) => "3",
+        Some(ContentSort::Newest) => "2",
         Some(ContentSort::Follows) => "1",
     };
     url.query_pairs_mut().append_pair("sortField", sort_field);

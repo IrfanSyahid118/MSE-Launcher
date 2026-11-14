@@ -16,6 +16,6 @@ mod tests {
     #[test]
     fn test_format_uuid_invalid() {
         assert!(format_uuid("invalid").is_err());
-        assert!(format_uuid("5627dd983e213c21b8a8e9234418364").is_err()); // 31 chars
+        assert!(format_uuid("5627dd983e213c21b8a8e9234418364").is_err());
     }
 }

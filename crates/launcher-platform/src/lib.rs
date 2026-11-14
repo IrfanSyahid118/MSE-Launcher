@@ -109,7 +109,6 @@ pub fn resolve_data_root() -> PathBuf {
         }
     }
 
-    // Fallback default home directory
     if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
         let trimmed = home.trim();
         if !trimmed.is_empty() {
@@ -151,7 +150,6 @@ pub fn get_system_memory() -> MemoryInfo {
         }
     }
 
-    // Fallback jika pemanggilan OS gagal atau pada platform non-windows
     MemoryInfo {
         total_mb: 16384,
         free_mb: 8192,

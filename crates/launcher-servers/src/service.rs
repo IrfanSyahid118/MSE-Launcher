@@ -145,10 +145,9 @@ impl ServerService {
         let root = match root_res {
             Ok((_name, r)) => r,
             Err(_) => {
-                // Karantina servers.dat yang rusak sebelum restore/reset agar tidak tertimpa atau disalin ke .bak
+                // Quarantine corrupt servers.dat before restore so backup is not overwritten.
                 Self::quarantine_corrupt_file(file_path);
 
-                // FN-13: Pulihkan dari servers.dat.bak jika valid
                 let bak_path = file_path.with_extension("dat.bak");
                 if bak_path.exists() {
                     if let Ok(bak_bytes) = fs::read(&bak_path) {
@@ -187,7 +186,6 @@ impl ServerService {
         mut root: HashMap<String, NbtTag>,
         server_compounds: Vec<HashMap<String, NbtTag>>,
     ) -> Result<(), LauncherErrorPayload> {
-        // FN-13: Backup ke servers.dat.bak sebelum menimpa file
         if file_path.exists() {
             let bak_path = file_path.with_extension("dat.bak");
             let bak_is_symlink = fs::symlink_metadata(&bak_path)

@@ -153,7 +153,6 @@ export const useAppStore = create<AppState>((set) => ({
       try {
         window.localStorage.setItem('mc_selected_skin', skin)
       } catch {
-        // Abaikan jika localStorage tidak tersedia di environment tertentu
       }
     }
     set({ selectedSkin: skin })
@@ -163,7 +162,6 @@ export const useAppStore = create<AppState>((set) => ({
       try {
         window.localStorage.setItem('mc_selected_skin_type', type)
       } catch {
-        // Abaikan jika localStorage tidak tersedia di environment tertentu
       }
     }
     set({ selectedSkinType: type })
@@ -173,7 +171,6 @@ export const useAppStore = create<AppState>((set) => ({
       try {
         window.localStorage.setItem('mc_skin_slim', slim ? 'true' : 'false')
       } catch {
-        // Abaikan jika localStorage tidak tersedia di environment tertentu
       }
     }
     set({ skinSlim: slim })
@@ -187,7 +184,6 @@ export const useAppStore = create<AppState>((set) => ({
           window.localStorage.removeItem('mc_custom_skin')
         }
       } catch {
-        // Abaikan jika localStorage tidak tersedia
       }
     }
     set({ customSkinUrl: url })

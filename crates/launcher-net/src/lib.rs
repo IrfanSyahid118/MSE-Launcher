@@ -70,7 +70,6 @@ impl HttpClient {
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                // SEC-06: Cegah serangan downgrade dari HTTPS ke HTTP
                 if attempt.previous().iter().any(|u| u.scheme() == "https")
                     && attempt.url().scheme() == "http"
                 {
@@ -307,20 +306,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_bad_cert_not_retried_bug12() {
-        // Spin up local TCP listener that accepts connection and sends invalid TLS data
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
                 use tokio::io::AsyncWriteExt;
-                // Send plaintext HTTP or garbage instead of TLS handshake
                 let _ = socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
             }
         });
 
         let client = HttpClient::new();
-        // Since URL is https://127.0.0.1:port, rustls attempts TLS handshake and fails immediately
         let res = client.get(&format!("https://127.0.0.1:{}", port)).await;
         assert!(res.is_err(), "HTTPS connection to non-TLS server must fail");
     }

@@ -577,7 +577,6 @@ impl ContentService {
                     .map_err(|e| map_cancel_err(&cancel_flag, e))?;
             }
 
-            // Update content record in instance
             if let Some(pos) = instance
                 .content
                 .iter()
@@ -604,7 +603,7 @@ impl ContentService {
                         }
                     }
                 } else if old_entry.file_name != clean_name {
-                    // FN-12: Hapus berkas JAR lama jika nama berkas berbeda agar tidak terjadi tabrakan duplikat
+                    // Remove stale JAR if the filename changes so duplicate mods do not collide.
                     if let Ok(clean_old) =
                         launcher_security::validate_single_filename(old_entry.file_name.trim())
                     {
@@ -748,7 +747,6 @@ impl ContentService {
             };
 
             if enabled {
-                // Aktifkan: disabled -> normal
                 if check_not_symlink(&disabled_path)? {
                     let _ = check_not_symlink(&normal_path)?;
                     fs::rename(&disabled_path, &normal_path).map_err(|e| {
@@ -757,7 +755,6 @@ impl ContentService {
                 }
                 entry.disabled = Some(false);
             } else {
-                // Nonaktifkan: normal -> disabled
                 if check_not_symlink(&normal_path)? {
                     let _ = check_not_symlink(&disabled_path)?;
                     fs::rename(&normal_path, &disabled_path).map_err(|e| {

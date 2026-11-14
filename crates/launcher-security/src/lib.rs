@@ -233,7 +233,6 @@ pub fn ensure_descendants_no_symlink(
             Component::Normal(part) => {
                 curr.push(part);
                 if !check_not_symlink_if_exists(&curr)? {
-                    // Ancestor belum ada; tetap verifikasi bila path penuh punya komponen lanjut
                     continue;
                 }
             }
@@ -246,7 +245,6 @@ pub fn ensure_descendants_no_symlink(
         }
     }
 
-    // Jika keduanya sudah ada di disk, pastikan secara kanonikal tetap di dalam root.
     if root.exists() && target.exists() && !canonical_starts_with(target, root)? {
         return Err(LauncherErrorPayload::invalid_input(
             "Target path keluar dari batas direktori root.",
@@ -464,7 +462,6 @@ pub fn validate_data_root_candidate(path: &Path) -> Result<(), LauncherErrorPayl
         }
     }
 
-    // Tolak root filesystem / root drive (mis. "C:\" atau "/")
     if path.parent().is_none() {
         return Err(LauncherErrorPayload::invalid_input(
             "Root data launcher tidak boleh menunjuk ke root drive atau root filesystem.",
@@ -607,7 +604,6 @@ pub fn validate_instance_id(id: &str) -> Result<(), LauncherErrorPayload> {
         ));
     }
 
-    // Karakter yang diizinkan: huruf, angka, titik, underscore, tanda minus
     let is_valid_chars = trimmed
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');

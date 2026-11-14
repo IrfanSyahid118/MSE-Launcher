@@ -181,7 +181,6 @@ export async function extractSkinFaces(skinSrc: string): Promise<ExtractedSkinRe
         ctx.imageSmoothingEnabled = false
         ctx.drawImage(img, 0, 0)
 
-        // Konversi legacy 64x32 ke 64x64 bila format lama
         if (isLegacy) {
           ctx.drawImage(canvas, 40, 16, 16, 16, 32, 48, 16, 16)
           ctx.drawImage(canvas, 0, 16, 16, 16, 16, 48, 16, 16)
@@ -189,7 +188,6 @@ export async function extractSkinFaces(skinSrc: string): Promise<ExtractedSkinRe
 
         const isSlim = checkSlimModel(canvas)
 
-        // ==================== BASE LAYER (Tubuh Bagian Dalam) ====================
         const headF = sliceFace(canvas, { x: 8, y: 8, w: 8, h: 8 })
         const headB = sliceFace(canvas, { x: 24, y: 8, w: 8, h: 8 })
         const headR = sliceFace(canvas, { x: 0, y: 8, w: 8, h: 8 })
@@ -277,7 +275,6 @@ export async function extractSkinFaces(skinSrc: string): Promise<ExtractedSkinRe
           legLeftBottom: legLBt.url,
         }
 
-        // ==================== OVERLAY LAYER (Layer Luar 3D) ====================
         const headOF = sliceFace(canvas, { x: 40, y: 8, w: 8, h: 8 }, true)
         const headOB = sliceFace(canvas, { x: 56, y: 8, w: 8, h: 8 }, true)
         const headOR = sliceFace(canvas, { x: 32, y: 8, w: 8, h: 8 }, true)
@@ -466,13 +463,6 @@ export async function extractCapeFaces(capeSrc: string | undefined | null): Prom
         ctx.imageSmoothingEnabled = false
         ctx.drawImage(img, 0, 0)
 
-        // Minecraft standard 64x32 cape face layout:
-        // Top: (1, 0, 10, 1)
-        // Bottom: (11, 0, 10, 1)
-        // Right: (0, 1, 1, 16)
-        // Back: (1, 1, 10, 16)
-        // Left: (11, 1, 1, 16)
-        // Front: (12, 1, 10, 16)
         const top = sliceFace(canvas, { x: 1, y: 0, w: 10, h: 1 })
         const bottom = sliceFace(canvas, { x: 11, y: 0, w: 10, h: 1 })
         const right = sliceFace(canvas, { x: 0, y: 1, w: 1, h: 16 })
