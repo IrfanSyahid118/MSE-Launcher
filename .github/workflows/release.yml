@@ -48,6 +48,9 @@ jobs:
           MCLAUNCHER_DEFAULT_CF_PROXY: ${{ secrets.MCLAUNCHER_DEFAULT_CF_PROXY }}
         run: pnpm build
 
+      - name: Build custom installer stub
+        run: cargo build --release -p launcher-installer
+
       - name: Stage release assets and latest.json
         id: stage
         shell: pwsh
@@ -80,11 +83,11 @@ jobs:
           }
           New-Item -ItemType Directory -Path $outDir | Out-Null
 
-          $nsisFile = Get-ChildItem -Path 'target/release/bundle/nsis' -Filter '*_x64-setup.exe' | Select-Object -First 1
           $msiFile = Get-ChildItem -Path 'target/release/bundle/msi' -Filter '*_x64_en-US.msi' | Select-Object -First 1
           $portableSrc = Get-Item 'target/release/minecraft-launcher-desktop.exe'
+          $installerStub = Get-Item 'target/release/launcher-installer.exe'
 
-          if (-not $nsisFile -or -not $msiFile -or -not $portableSrc) {
+          if (-not $msiFile -or -not $portableSrc -or -not $installerStub) {
             throw 'Expected Tauri build artifacts were not found in target/release.'
           }
 
@@ -96,7 +99,13 @@ jobs:
           $msiOut = Join-Path $outDir $msiName
           $portableOut = Join-Path $outDir $portableName
 
-          Copy-Item $nsisFile.FullName $nsisOut -Force
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File 'scripts/package-installer.ps1' `
+            -StubExe $installerStub.FullName `
+            -AppExe $portableSrc.FullName `
+            -Version $releaseVersion `
+            -OutExe $nsisOut
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           Copy-Item $msiFile.FullName $msiOut -Force
           Copy-Item $portableSrc.FullName $portableOut -Force
 
