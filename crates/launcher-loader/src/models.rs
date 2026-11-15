@@ -28,6 +28,7 @@ pub struct LoaderProfile {
     pub release_time: Option<String>,
     #[serde(default)]
     pub libraries: Vec<MojangLibrary>,
+    pub java_version: Option<launcher_version::MojangJavaVersionInfo>,
     pub arguments: Option<serde_json::Value>,
     pub minecraft_arguments: Option<String>,
 }

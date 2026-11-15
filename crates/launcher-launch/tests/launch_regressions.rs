@@ -16,7 +16,10 @@ async fn test_n06_concurrent_launch_same_instance_rejected() {
     let settings = launcher_storage::SettingsStore::new(paths.clone());
     let versions = launcher_version::VersionService::new(paths.clone());
     let loaders = launcher_loader::LoaderService::new(paths.clone(), versions.clone());
-    let downloader = launcher_download::DownloadManager::new(2);
+    let downloader = launcher_download::DownloadManager::with_http_client(
+        2,
+        launcher_net::HttpClient::new_loopback_test(),
+    );
     let java = launcher_java::JavaService::new(paths.clone());
 
     let inst = instances
@@ -112,7 +115,10 @@ async fn test_n07_launch_respects_java_memory_and_jvm_settings() {
     let settings = launcher_storage::SettingsStore::new(paths.clone());
     let versions = launcher_version::VersionService::new(paths.clone());
     let loaders = launcher_loader::LoaderService::new(paths.clone(), versions.clone());
-    let downloader = launcher_download::DownloadManager::new(2);
+    let downloader = launcher_download::DownloadManager::with_http_client(
+        2,
+        launcher_net::HttpClient::new_loopback_test(),
+    );
     let java = launcher_java::JavaService::new(paths.clone());
 
     let java_bin = if cfg!(windows) { "java.exe" } else { "java" };
@@ -344,7 +350,10 @@ async fn test_n08_expired_microsoft_token_refresh_error_aborts_launch() {
     let settings = launcher_storage::SettingsStore::new(paths.clone());
     let versions = launcher_version::VersionService::new(paths.clone());
     let loaders = launcher_loader::LoaderService::new(paths.clone(), versions.clone());
-    let downloader = launcher_download::DownloadManager::new(2);
+    let downloader = launcher_download::DownloadManager::with_http_client(
+        2,
+        launcher_net::HttpClient::new_loopback_test(),
+    );
     let java = launcher_java::JavaService::new(paths.clone());
 
     let inst = instances
@@ -455,7 +464,10 @@ async fn test_n17_skin_injection_respects_account_type_and_no_forced_csl_downloa
     let settings = launcher_storage::SettingsStore::new(paths.clone());
     let versions = launcher_version::VersionService::new(paths.clone());
     let loaders = launcher_loader::LoaderService::new(paths.clone(), versions.clone());
-    let downloader = launcher_download::DownloadManager::new(2);
+    let downloader = launcher_download::DownloadManager::with_http_client(
+        2,
+        launcher_net::HttpClient::new_loopback_test(),
+    );
     let java = launcher_java::JavaService::new(paths.clone());
     let secrets = launcher_platform::SecretStore::new(paths.secrets_file.clone());
 
@@ -645,7 +657,10 @@ async fn test_n33_launch_updates_instance_last_played_at() {
     let settings = launcher_storage::SettingsStore::new(paths.clone());
     let versions = launcher_version::VersionService::new(paths.clone());
     let loaders = launcher_loader::LoaderService::new(paths.clone(), versions.clone());
-    let downloader = launcher_download::DownloadManager::new(2);
+    let downloader = launcher_download::DownloadManager::with_http_client(
+        2,
+        launcher_net::HttpClient::new_loopback_test(),
+    );
     let java = launcher_java::JavaService::new(paths.clone());
 
     let fake_java = {

@@ -17,6 +17,8 @@ import {
   Wand2,
 } from 'lucide-react'
 import { useNavigate } from 'react-router'
+import { useI18n } from '../../i18n'
+import type { MessageKey } from '../../i18n'
 import { useActiveAccount, useInstances } from '../../api/queries'
 import styles from './RightSidebar.module.css'
 
@@ -37,17 +39,17 @@ export interface RightSidebarProps {
   } | undefined
 }
 
-const CATEGORIES: { name: string; icon: ReactNode }[] = [
-  { name: 'Adventure', icon: <Compass size={14} aria-hidden /> },
-  { name: 'Challenging', icon: <ShieldCheck size={14} aria-hidden /> },
-  { name: 'Combat', icon: <Swords size={14} aria-hidden /> },
-  { name: 'Kitchen Sink', icon: <Boxes size={14} aria-hidden /> },
-  { name: 'Lightweight', icon: <Feather size={14} aria-hidden /> },
-  { name: 'Magic', icon: <Wand2 size={14} aria-hidden /> },
-  { name: 'Multiplayer', icon: <Users size={14} aria-hidden /> },
-  { name: 'Optimization', icon: <Gauge size={14} aria-hidden /> },
-  { name: 'Quests', icon: <ScrollText size={14} aria-hidden /> },
-  { name: 'Technology', icon: <Cog size={14} aria-hidden /> },
+const CATEGORIES: { name: string; labelKey: MessageKey; icon: ReactNode }[] = [
+  { name: 'Adventure', labelKey: 'rightSidebar.cat.adventure', icon: <Compass size={14} aria-hidden /> },
+  { name: 'Challenging', labelKey: 'rightSidebar.cat.challenging', icon: <ShieldCheck size={14} aria-hidden /> },
+  { name: 'Combat', labelKey: 'rightSidebar.cat.combat', icon: <Swords size={14} aria-hidden /> },
+  { name: 'Kitchen Sink', labelKey: 'rightSidebar.cat.kitchenSink', icon: <Boxes size={14} aria-hidden /> },
+  { name: 'Lightweight', labelKey: 'rightSidebar.cat.lightweight', icon: <Feather size={14} aria-hidden /> },
+  { name: 'Magic', labelKey: 'rightSidebar.cat.magic', icon: <Wand2 size={14} aria-hidden /> },
+  { name: 'Multiplayer', labelKey: 'rightSidebar.cat.multiplayer', icon: <Users size={14} aria-hidden /> },
+  { name: 'Optimization', labelKey: 'rightSidebar.cat.optimization', icon: <Gauge size={14} aria-hidden /> },
+  { name: 'Quests', labelKey: 'rightSidebar.cat.quests', icon: <ScrollText size={14} aria-hidden /> },
+  { name: 'Technology', labelKey: 'rightSidebar.cat.technology', icon: <Cog size={14} aria-hidden /> },
 ]
 
 export function RightSidebar({
@@ -58,6 +60,7 @@ export function RightSidebar({
   onSelectCategory,
   projectCompatibility,
 }: RightSidebarProps): ReactNode {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const { account } = useActiveAccount()
   const instancesQuery = useInstances()
@@ -71,19 +74,19 @@ export function RightSidebar({
 
   const steps = [
     {
-      label: 'Create first instance',
+      label: t('rightSidebar.createFirstInstance'),
       done: hasInstance,
       action: () => navigate('/instances'),
     },
     {
-      label: 'Sign in to Minecraft',
+      label: t('rightSidebar.signInMinecraft'),
       done: hasMinecraftAccount,
       action: () => navigate('/accounts'),
     },
   ]
 
   return (
-    <aside className={styles.sidebar} aria-label="Sidebar">
+    <aside className={styles.sidebar} aria-label={t('rightSidebar.ariaLabel')}>
       <section className={styles.section}>
         <button
           type="button"
@@ -91,7 +94,7 @@ export function RightSidebar({
           onClick={() => setGettingStartedOpen((prev) => !prev)}
           aria-expanded={gettingStartedOpen}
         >
-          <span className={styles.sectionTitle}>Getting started</span>
+          <span className={styles.sectionTitle}>{t('home.gs.title')}</span>
           {gettingStartedOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
         </button>
 
@@ -121,12 +124,12 @@ export function RightSidebar({
       {mode === 'browse' ? (
         <section className={styles.section}>
           <div className={styles.toggleRow}>
-            <span className={styles.toggleLabel}>Hide already installed</span>
+            <span className={styles.toggleLabel}>{t('rightSidebar.hideInstalled')}</span>
             <button
               type="button"
               role="switch"
               aria-checked={hideInstalled}
-              aria-label="Hide already installed"
+              aria-label={t('rightSidebar.hideInstalled')}
               className={`${styles.switch} ${hideInstalled ? styles.switchActive : ''}`}
               onClick={() => onToggleHideInstalled?.(!hideInstalled)}
             >
@@ -141,7 +144,7 @@ export function RightSidebar({
               onClick={() => setCategoriesOpen((prev) => !prev)}
               aria-expanded={categoriesOpen}
             >
-              <span className={styles.sectionTitle}>Category</span>
+              <span className={styles.sectionTitle}>{t('rightSidebar.category')}</span>
               {categoriesOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
             </button>
 
@@ -158,7 +161,7 @@ export function RightSidebar({
                       aria-pressed={isChecked}
                     >
                       <span className={styles.categoryIcon}>{category.icon}</span>
-                      <span>{category.name}</span>
+                      <span>{t(category.labelKey)}</span>
                     </button>
                   )
                 })}
@@ -170,7 +173,7 @@ export function RightSidebar({
 
       {mode === 'project' ? (
         <section className={styles.section}>
-          <h3 className={styles.sectionTitle}>Compatibility</h3>
+          <h3 className={styles.sectionTitle}>{t('browse.compatibility')}</h3>
           <div className={styles.compatBlock}>
             <span className={styles.compatHeading}>Minecraft: Java Edition</span>
             <div className={styles.versionChips}>
@@ -183,7 +186,7 @@ export function RightSidebar({
 
             {projectCompatibility?.platforms && projectCompatibility.platforms.length > 0 ? (
               <>
-                <span className={styles.compatHeading}>Platforms</span>
+                <span className={styles.compatHeading}>{t('browse.platforms')}</span>
                 <div className={styles.versionChips}>
                   {projectCompatibility.platforms.map((platform) => (
                     <span key={platform} className={styles.compatChip}>
@@ -196,7 +199,7 @@ export function RightSidebar({
 
             {projectCompatibility?.environment ? (
               <>
-                <span className={styles.compatHeading}>Supported environments</span>
+                <span className={styles.compatHeading}>{t('rightSidebar.supportedEnvironments')}</span>
                 <span className={styles.compatChip}>{projectCompatibility.environment}</span>
               </>
             ) : null}

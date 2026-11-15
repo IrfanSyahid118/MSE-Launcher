@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   AlertCircle,
@@ -20,7 +20,7 @@ import {
   useUpdateSettings,
   useValidateJava,
 } from '../api/queries'
-import { useAppStore } from '../stores/app-store'
+import { consumeBufferedTaskEvent, useAppStore } from '../stores/app-store'
 import { GlassButton } from '../components/GlassButton/GlassButton'
 import { GlassSlider } from '../components/GlassSlider/GlassSlider'
 import { GlassSwitch } from '../components/GlassSwitch/GlassSwitch'
@@ -34,7 +34,7 @@ const PARALLEL_MAX = 16
 
 type Category = 'appearance' | 'language' | 'java' | 'downloads' | 'discord'
 
-const APP_VERSION = '1.0.0-beta'
+const APP_VERSION = '1.0.0'
 
 function platformLabel(): string {
   const agent = navigator.userAgent
@@ -64,6 +64,8 @@ export function Settings(): ReactNode {
 
   const [customPathInput, setCustomPathInput] = useState(settings?.java.customPath ?? '')
   const [customJvmArgsInput, setCustomJvmArgsInput] = useState(settings?.java.customJvmArgs ?? '')
+  const customPathDirtyRef = useRef(false)
+  const customJvmArgsDirtyRef = useRef(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateCheckedOnce, setUpdateCheckedOnce] = useState(false)
@@ -108,8 +110,12 @@ export function Settings(): ReactNode {
     setMaxMb(Math.min(settings.memory.defaultMaxMb, limit))
     setMinMb(Math.min(settings.memory.defaultMinMb, limit))
     setParallelism(settings.downloads.parallelism)
-    setCustomPathInput(settings.java.customPath ?? '')
-    setCustomJvmArgsInput(settings.java.customJvmArgs ?? '')
+    if (!customPathDirtyRef.current) {
+      setCustomPathInput(settings.java.customPath ?? '')
+    }
+    if (!customJvmArgsDirtyRef.current) {
+      setCustomJvmArgsInput(settings.java.customJvmArgs ?? '')
+    }
   }, [settings, totalMb])
 
   if (!settings) {
@@ -152,7 +158,7 @@ export function Settings(): ReactNode {
   }
 
   const handleInstallUpdate = async (): Promise<void> => {
-    if (!updateInfo?.downloadUrl || !updateInfo.assetName || isUpdating) return
+    if (!updateInfo?.downloadUrl || !updateInfo.assetName || !updateInfo.sha256 || isUpdating) return
     setUpdateErrorMsg(null)
     try {
       const res = await invoke('updater:install', {
@@ -161,6 +167,15 @@ export function Settings(): ReactNode {
         sha256: updateInfo.sha256,
         sizeBytes: updateInfo.sizeBytes,
       })
+      const buffered = consumeBufferedTaskEvent(res.taskId)
+      if (buffered?.error) {
+        setUpdateErrorMsg(buffered.error.message)
+        pushToast(buffered.error.message, 'error')
+        return
+      }
+      if (buffered?.done) {
+        return
+      }
       setUpdateTaskId(res.taskId)
     } catch (error) {
       const msg = errorMessage(error, t('settings.updateError'))
@@ -236,7 +251,7 @@ export function Settings(): ReactNode {
   return (
     <div className={styles.page} data-testid="settings-screen">
       <div className={styles.layout}>
-        <nav className={styles.nav} aria-label="Settings sections">
+        <nav className={styles.nav} aria-label={t('settings.navAria')}>
           {navGroups.map((group) => (
             <div key={group.label} className={styles.navGroup}>
               <span className={styles.navGroupLabel}>{group.label}</span>
@@ -285,7 +300,10 @@ export function Settings(): ReactNode {
                 <span className={styles.navFooterStatus}>{t('settings.upToDate')}</span>
               ) : null}
 
-              {updateInfo?.updateAvailable && updateInfo.downloadUrl && updateInfo.assetName ? (
+              {updateInfo?.updateAvailable &&
+              updateInfo.downloadUrl &&
+              updateInfo.assetName &&
+              updateInfo.sha256 ? (
                 <GlassButton
                   size="sm"
                   variant="primary"
@@ -295,6 +313,20 @@ export function Settings(): ReactNode {
                   onClick={() => void handleInstallUpdate()}
                 >
                   {isUpdating ? t('settings.updating') : t('settings.updateNow')}
+                </GlassButton>
+              ) : updateInfo?.updateAvailable ? (
+                <GlassButton
+                  size="sm"
+                  variant="ghost"
+                  data-testid="update-manual-btn"
+                  title={t('settings.updateNoChecksum')}
+                  onClick={() => {
+                    void invoke('shell:openExternal', {
+                      url: 'https://github.com/IrfanSyahid118/MSE-Launcher/releases',
+                    }).catch(() => undefined)
+                  }}
+                >
+                  {t('settings.updateManual')}
                 </GlassButton>
               ) : (
                 <GlassButton
@@ -456,7 +488,7 @@ export function Settings(): ReactNode {
 
                   <p className={styles.rowHint}>
                     {t('settings.memoryTotal', { total: totalMb })}
-                    {freeMb === null ? '' : ` Â· ${t('settings.memoryFree', { free: freeMb })}`}
+                    {freeMb === null ? '' : ` \u00b7 ${t('settings.memoryFree', { free: freeMb })}`}
                   </p>
                   {memoryHigh ? <p className={styles.warning}>{t('settings.memoryHigh')}</p> : null}
                   {is32Bit ? (
@@ -509,14 +541,14 @@ export function Settings(): ReactNode {
                             <span className={styles.runtimeName}>
                               Java {runtime.majorVersion} ({runtime.version})
                               {runtime.managed ? (
-                                <span className={styles.badgeMuted}>Mojang</span>
+                                <span className={styles.badgeMuted}>{t('settings.mojangBadge')}</span>
                               ) : null}
                               <span className={styles.badgeMuted}>
                                 {runtime.bits === 32 ? '32-bit' : '64-bit'}
                               </span>
                             </span>
                             <span className={styles.runtimeMeta}>
-                              {runtime.vendor ?? 'Java'} Â· {runtime.path}
+                              {runtime.vendor ?? 'Java'} {'\u00b7'} {runtime.path}
                             </span>
                           </span>
                           {isSelected ? (
@@ -553,11 +585,15 @@ export function Settings(): ReactNode {
                     className={styles.textInput}
                     value={customPathInput}
                     placeholder={t('settings.javaCustomPlaceholder')}
-                    onChange={(event) => setCustomPathInput(event.target.value)}
+                    onChange={(event) => {
+                      customPathDirtyRef.current = true
+                      setCustomPathInput(event.target.value)
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' && customPathInput.trim()) {
                         validateJava.mutate(customPathInput.trim(), {
                           onSuccess: (result) => {
+                            customPathDirtyRef.current = false
                             save({
                               java: { customPath: customPathInput.trim(), preferManaged: false },
                             })
@@ -583,6 +619,7 @@ export function Settings(): ReactNode {
                     onClick={() => {
                       validateJava.mutate(customPathInput.trim(), {
                         onSuccess: (result) => {
+                          customPathDirtyRef.current = false
                           save({
                             java: { customPath: customPathInput.trim(), preferManaged: false },
                           })
@@ -607,6 +644,7 @@ export function Settings(): ReactNode {
                       size="sm"
                       variant="ghost"
                       onClick={() => {
+                        customPathDirtyRef.current = false
                         setCustomPathInput('')
                         save({ java: { customPath: null, preferManaged: true } })
                       }}
@@ -657,10 +695,17 @@ export function Settings(): ReactNode {
                     className={styles.textInput}
                     value={customJvmArgsInput}
                     placeholder="-XX:+UnlockExperimentalVMOptions ..."
-                    onChange={(event) => setCustomJvmArgsInput(event.target.value)}
-                    onBlur={() => save({ java: { customJvmArgs: customJvmArgsInput } })}
+                    onChange={(event) => {
+                      customJvmArgsDirtyRef.current = true
+                      setCustomJvmArgsInput(event.target.value)
+                    }}
+                    onBlur={() => {
+                      customJvmArgsDirtyRef.current = false
+                      save({ java: { customJvmArgs: customJvmArgsInput } })
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
+                        customJvmArgsDirtyRef.current = false
                         save({ java: { customJvmArgs: customJvmArgsInput } })
                       }
                     }}

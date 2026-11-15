@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -74,7 +74,7 @@ where
     // Batch logs every 100ms to avoid IPC event flooding during game startup.
     let (log_tx, mut log_rx) = tokio::sync::mpsc::channel::<LogLine>(2048);
 
-    {
+    let batcher_handle = {
         let cb = Arc::clone(&log_cb);
         tokio::spawn(async move {
             let mut buffer = Vec::new();
@@ -106,55 +106,94 @@ where
                     }
                 }
             }
-        });
-    }
+        })
+    };
 
-    if let Some(out) = stdout {
+    let stdout_handle = stdout.map(|out| {
         let tx = log_tx.clone();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(out).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let _ = tx
-                    .send(LogLine {
-                        stream: "stdout".to_string(),
-                        line,
-                        time: Utc::now().to_rfc3339(),
-                    })
-                    .await;
-            }
-        });
-    }
+        tokio::spawn(pump_log_stream("stdout", out, tx))
+    });
 
-    if let Some(err) = stderr {
-        let tx = log_tx;
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(err).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let _ = tx
-                    .send(LogLine {
-                        stream: "stderr".to_string(),
-                        line,
-                        time: Utc::now().to_rfc3339(),
-                    })
-                    .await;
-            }
-        });
-    }
+    let stderr_handle = stderr.map(|err| {
+        let tx = log_tx.clone();
+        tokio::spawn(pump_log_stream("stderr", err, tx))
+    });
+
+    // Drop the original sender so `log_rx` closes once all stream readers finish.
+    drop(log_tx);
 
     tokio::spawn(async move {
-        tokio::select! {
-            status = child.wait() => {
-                let code = status.ok().and_then(|s| s.code());
-                on_exit(code);
-            }
+        let code = tokio::select! {
+            status = child.wait() => status.ok().and_then(|s| s.code()),
             _ = kill_rx => {
                 let _ = child.start_kill();
                 let status = child.wait().await;
-                let code = status.ok().and_then(|s| s.code());
-                on_exit(code);
+                status.ok().and_then(|s| s.code())
             }
+        };
+
+        let mut stdout_handle = stdout_handle;
+        let mut stderr_handle = stderr_handle;
+        let mut batcher_handle = batcher_handle;
+
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            if let Some(handle) = stdout_handle.as_mut() {
+                let _ = handle.await;
+            }
+            if let Some(handle) = stderr_handle.as_mut() {
+                let _ = handle.await;
+            }
+            let _ = (&mut batcher_handle).await;
+        })
+        .await;
+
+        // Proses anak yang mewarisi pipe bisa menahan EOF; hentikan pembaca agar tidak bocor per launch.
+        if drained.is_err() {
+            if let Some(handle) = stdout_handle.as_ref() {
+                handle.abort();
+            }
+            if let Some(handle) = stderr_handle.as_ref() {
+                handle.abort();
+            }
+            batcher_handle.abort();
         }
+
+        on_exit(code);
     });
 
     Ok(RunningGame { pid, kill_tx })
+}
+
+async fn pump_log_stream<R: AsyncRead + Unpin>(
+    stream_name: &'static str,
+    reader: R,
+    tx: tokio::sync::mpsc::Sender<LogLine>,
+) {
+    let mut buf_reader = BufReader::new(reader);
+    let mut buf = Vec::with_capacity(512);
+
+    loop {
+        buf.clear();
+        match buf_reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break,
+            Ok(_) => {
+                while matches!(buf.last(), Some(b'\n' | b'\r')) {
+                    buf.pop();
+                }
+                let line = String::from_utf8_lossy(&buf).into_owned();
+                if tx
+                    .send(LogLine {
+                        stream: stream_name.to_string(),
+                        line,
+                        time: Utc::now().to_rfc3339(),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }

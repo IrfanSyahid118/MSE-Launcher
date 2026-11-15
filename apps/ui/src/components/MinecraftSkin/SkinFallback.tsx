@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useI18n } from '../../i18n'
 import { getSteveSkinDataUrl } from './skin-textures'
 import { SkinThumbnail } from './SkinThumbnail'
 import styles from './SkinFallback.module.css'
@@ -15,6 +16,7 @@ export interface SkinFallbackProps {
  * supaya tampilannya tetap terbaca sebagai pemain Minecraft.
  */
 export function SkinFallback({ skinUrl, isSlim = false, label }: SkinFallbackProps): ReactNode {
+  const { t } = useI18n()
   return (
     <div className={styles.fallback} role="img" aria-label={label}>
       <div className={styles.figure}>
@@ -25,7 +27,7 @@ export function SkinFallback({ skinUrl, isSlim = false, label }: SkinFallbackPro
           className={styles.canvas}
         />
       </div>
-      <p className={styles.note}>Pratinjau 2D (3D tidak tersedia di perangkat ini)</p>
+      <p className={styles.note}>{t('skin.fallback2dNote')}</p>
     </div>
   )
 }

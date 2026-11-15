@@ -57,16 +57,22 @@ jobs:
           $tauriCfg = Get-Content -Raw 'src-tauri/tauri.conf.json' | ConvertFrom-Json
           $pkgVersion = [string]$tauriCfg.version
 
+          $cargoMatch = Select-String -Path 'Cargo.toml' -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $cargoVersion = if ($cargoMatch) { $cargoMatch.Matches[0].Groups[1].Value.Trim() } else { $pkgVersion }
+
           $tag = '${{ github.ref_name }}'
           if ('${{ github.ref }}' -notlike 'refs/tags/*') {
             $inputTag = '${{ inputs.tag }}'
             if (-not [string]::IsNullOrWhiteSpace($inputTag)) {
               $tag = $inputTag.Trim()
             } else {
-              $tag = "v$pkgVersion"
+              $tag = "v$cargoVersion"
             }
           }
           $releaseVersion = $tag -replace '^[vV]', ''
+          if ($releaseVersion -ne $cargoVersion) {
+            throw "Release tag version '$releaseVersion' does not match Cargo.toml version '$cargoVersion'."
+          }
 
           $outDir = Join-Path $PWD 'release-assets'
           if (Test-Path $outDir) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { DropdownMenu } from 'radix-ui'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -12,6 +13,7 @@ import {
   Filter,
   FolderOpen,
   Globe,
+  ImagePlus,
   Link2,
   MoreVertical,
   Palette,
@@ -20,6 +22,7 @@ import {
   Plus,
   Puzzle,
   RefreshCw,
+  RotateCcw,
   Save,
   Search,
   Server,
@@ -30,6 +33,7 @@ import {
   X,
 } from 'lucide-react'
 import type {
+  ContentProjectSummary,
   ContentProviderId,
   ContentType,
   InstanceContentEntry,
@@ -56,6 +60,7 @@ import {
   useVersions,
 } from '../api/queries'
 import { errorMessage, invoke } from '../api/launcher'
+import { registerCleanupTask, registerLaunchTask } from '../api/task-registration'
 import { useAppStore } from '../stores/app-store'
 import { GlassButton } from '../components/GlassButton/GlassButton'
 import { GlassCard } from '../components/GlassCard/GlassCard'
@@ -76,6 +81,68 @@ const CONTENT_TYPE_KEYS: Record<ContentType, MessageKey> = {
   datapack: 'instance.contentType.datapack',
   world: 'instance.contentType.world',
   modpack: 'instance.contentType.modpack',
+}
+
+const ALLOWED_ICON_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const MAX_ICON_FILE_BYTES = 5 * 1024 * 1024
+const INSTANCE_ICON_EXPORT_SIZE = 128
+
+async function resizeInstanceIconFile(file: File): Promise<string> {
+  if (!ALLOWED_ICON_MIME_TYPES.has(file.type) || file.size <= 0 || file.size > MAX_ICON_FILE_BYTES) {
+    throw new Error('INVALID_ICON_FILE')
+  }
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => resolve(image)
+      image.onerror = () => reject(new Error('INVALID_ICON_FILE'))
+      image.src = objectUrl
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = INSTANCE_ICON_EXPORT_SIZE
+    canvas.height = INSTANCE_ICON_EXPORT_SIZE
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('INVALID_ICON_FILE')
+    const scale = Math.min(
+      INSTANCE_ICON_EXPORT_SIZE / Math.max(1, img.naturalWidth),
+      INSTANCE_ICON_EXPORT_SIZE / Math.max(1, img.naturalHeight),
+    )
+    const drawW = Math.max(1, Math.round(img.naturalWidth * scale))
+    const drawH = Math.max(1, Math.round(img.naturalHeight * scale))
+    const drawX = Math.floor((INSTANCE_ICON_EXPORT_SIZE - drawW) / 2)
+    const drawY = Math.floor((INSTANCE_ICON_EXPORT_SIZE - drawH) / 2)
+    ctx.imageSmoothingEnabled = img.naturalWidth > INSTANCE_ICON_EXPORT_SIZE || img.naturalHeight > INSTANCE_ICON_EXPORT_SIZE
+    ctx.drawImage(img, drawX, drawY, drawW, drawH)
+    const dataUrl = canvas.toDataURL('image/png')
+    if (dataUrl.length > 450_000) {
+      throw new Error('INVALID_ICON_FILE')
+    }
+    return dataUrl
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+function findMatchingModpackIcon(
+  items: ContentProjectSummary[],
+  instanceId: string,
+  instanceName: string,
+): string | null {
+  const idLower = instanceId.trim().toLowerCase()
+  const nameLower = instanceName.trim().toLowerCase()
+  const nameSlug = nameLower.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const matched = items.find((item) => {
+    if (!item.iconUrl) return false
+    const slugLower = item.slug.trim().toLowerCase()
+    const titleLower = item.title.trim().toLowerCase()
+    return (
+      slugLower === idLower ||
+      (nameSlug.length > 0 && slugLower === nameSlug) ||
+      (nameLower.length > 0 && titleLower === nameLower)
+    )
+  })
+  return matched?.iconUrl ?? null
 }
 
 type InstanceManageTab =
@@ -235,6 +302,8 @@ export function InstanceDetail(): ReactNode {
   const { id } = useParams<{ id: string }>()
   const { t, language } = useI18n()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const launchInFlightRef = useRef(false)
   const instancesQuery = useInstances()
   const removeInstance = useRemoveInstance()
   const updateInstance = useUpdateInstance()
@@ -242,10 +311,9 @@ export function InstanceDetail(): ReactNode {
   const toggleContent = useToggleContent()
   const versionsQuery = useVersions()
   const pushToast = useAppStore((state) => state.pushToast)
-  const setLaunchTaskId = useAppStore((state) => state.setLaunchTaskId)
   const setLaunchInstanceId = useAppStore((state) => state.setLaunchInstanceId)
   const setLastLaunchInstanceId = useAppStore((state) => state.setLastLaunchInstanceId)
-  const setGlobalCleanupTaskId = useAppStore((state) => state.setCleanupTaskId)
+  const setLaunchProgress = useAppStore((state) => state.setLaunchProgress)
   const launchTaskId = useAppStore((state) => state.launchTaskId)
   const launchInstanceId = useAppStore((state) => state.launchInstanceId)
   const isGameRunning = useAppStore((state) => state.isGameRunning)
@@ -261,6 +329,9 @@ export function InstanceDetail(): ReactNode {
   const [editVersion, setEditVersion] = useState('')
   const [editLoaderType, setEditLoaderType] = useState<LoaderType>('vanilla')
   const [editLoaderVersion, setEditLoaderVersion] = useState<string | null>(null)
+  const [editIconUrl, setEditIconUrl] = useState<string | null>(null)
+  const [isDetectingIcon, setIsDetectingIcon] = useState(false)
+  const iconInputRef = useRef<HTMLInputElement>(null)
 
   const serversQuery = useInstanceServers(id ?? '')
   const addServer = useAddInstanceServer()
@@ -347,6 +418,7 @@ export function InstanceDetail(): ReactNode {
       setEditVersion(instance.minecraftVersion)
       setEditLoaderType(instance.loader.type)
       setEditLoaderVersion(instance.loader.version)
+      setEditIconUrl(instance.iconUrl ?? null)
     }
   }, [
     instance?.id,
@@ -354,6 +426,7 @@ export function InstanceDetail(): ReactNode {
     instance?.minecraftVersion,
     instance?.loader.type,
     instance?.loader.version,
+    instance?.iconUrl,
   ])
 
   const releases = useMemo(() => {
@@ -441,6 +514,56 @@ export function InstanceDetail(): ReactNode {
     }
   }, [activeTab, servers, pingSingleServer])
 
+  const handlePickIconFile = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    try {
+      const dataUrl = await resizeInstanceIconFile(file)
+      setEditIconUrl(dataUrl)
+    } catch {
+      pushToast(t('instance.iconInvalidFile'), 'error')
+    }
+  }
+
+  const handleDetectModpackIcon = async (): Promise<void> => {
+    if (!instance || isDetectingIcon) return
+    setIsDetectingIcon(true)
+    try {
+      const modpackEntry = instance.content?.find((entry) => entry.type === 'modpack')
+      if (modpackEntry) {
+        const project = await invoke('content:project', {
+          provider: modpackEntry.provider,
+          projectId: modpackEntry.projectId,
+        })
+        if (project.iconUrl) {
+          setEditIconUrl(project.iconUrl)
+          pushToast(t('instance.iconDetected'), 'info')
+          return
+        }
+      }
+      const queryText = editName.trim() || instance.name
+      const searchRes = await invoke('content:search', {
+        provider: 'modrinth',
+        type: 'modpack',
+        text: queryText,
+        page: 1,
+        pageSize: 5,
+      })
+      const matchedIcon = findMatchingModpackIcon(searchRes.items, instance.id, queryText)
+      if (matchedIcon) {
+        setEditIconUrl(matchedIcon)
+        pushToast(t('instance.iconDetected'), 'info')
+      } else {
+        pushToast(t('instance.iconNotFound'), 'info')
+      }
+    } catch (err) {
+      pushToast(errorMessage(err, t('error.unknown')), 'error')
+    } finally {
+      setIsDetectingIcon(false)
+    }
+  }
+
   const handleSaveSettings = async (): Promise<void> => {
     if (!instance) return
     if (!editName.trim()) {
@@ -456,6 +579,7 @@ export function InstanceDetail(): ReactNode {
         ...instance,
         name: editName.trim(),
         minecraftVersion: editVersion,
+        iconUrl: editIconUrl,
         loader: {
           type: editLoaderType,
           version: editLoaderType === 'vanilla' ? null : editLoaderVersion,
@@ -493,14 +617,17 @@ export function InstanceDetail(): ReactNode {
   }
 
   const handleLaunch = async (serverAddress?: string): Promise<void> => {
+    if (launchInFlightRef.current || launchTaskId !== null || isGameRunning) {
+      return
+    }
     if (!instance.minecraftVersion) {
       pushToast(t('home.play.unavailable'), 'error')
       return
     }
-    const tempTaskId = `launch-${Date.now()}`
+    launchInFlightRef.current = true
     setLaunchInstanceId(instance.id)
     setLastLaunchInstanceId(instance.id)
-    setLaunchTaskId(tempTaskId)
+    setLaunchProgress({ stage: t('home.launching'), completed: 0, total: 1000 })
     try {
       const res = await window.launcher.invoke('launch:start', {
         instanceId: instance.id,
@@ -509,15 +636,17 @@ export function InstanceDetail(): ReactNode {
       })
       if (!res.ok) {
         setLaunchInstanceId(null)
-        setLaunchTaskId(null)
+        setLaunchProgress(null)
         pushToast(res.error.message, 'error')
         return
       }
-      setLaunchTaskId(res.data.taskId)
+      registerLaunchTask(res.data.taskId, queryClient)
     } catch (err) {
       setLaunchInstanceId(null)
-      setLaunchTaskId(null)
+      setLaunchProgress(null)
       pushToast(errorMessage(err, t('error.unknown')), 'error')
+    } finally {
+      launchInFlightRef.current = false
     }
   }
 
@@ -536,7 +665,7 @@ export function InstanceDetail(): ReactNode {
         pushToast(t('instances.deleted'))
         if (deleteGameData) {
           void invoke('downloads:cleanup', undefined)
-            .then(({ taskId }) => setGlobalCleanupTaskId(taskId))
+            .then(({ taskId }) => registerCleanupTask(taskId, t))
             .catch((err: unknown) => {
               pushToast(errorMessage(err, t('error.unknown')), 'error')
             })
@@ -758,10 +887,10 @@ export function InstanceDetail(): ReactNode {
             }
             onClick={() => void handleLaunch()}
           >
-            {launchTaskId && launchInstanceId === instance.id
-              ? t('home.launching')
-              : isGameRunning && launchInstanceId === instance.id
-                ? t('home.running')
+            {isGameRunning && launchInstanceId === instance.id
+              ? t('home.running')
+              : launchTaskId && launchInstanceId === instance.id
+                ? t('home.launching')
                 : t('instances.play')}
           </GlassButton>
         </div>
@@ -2090,6 +2219,54 @@ export function InstanceDetail(): ReactNode {
 
         {activeTab === 'settings' ? (
           <GlassCard tone="strong" className={styles.card}>
+            <div className={styles.field}>
+              <span className={styles.fieldLabel}>{t('instance.icon')}</span>
+              <div className={styles.iconEditorRow}>
+                <InstanceIcon instance={{ ...instance, iconUrl: editIconUrl }} size={48} />
+                <div className={styles.iconEditorActions}>
+                  <input
+                    ref={iconInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    style={{ display: 'none' }}
+                    onChange={(e) => void handlePickIconFile(e)}
+                  />
+                  <GlassButton
+                    size="sm"
+                    variant="outline"
+                    icon={<ImagePlus size={14} aria-hidden />}
+                    onClick={() => iconInputRef.current?.click()}
+                    data-testid="instance-icon-choose-btn"
+                  >
+                    {t('instance.iconChoose')}
+                  </GlassButton>
+                  <GlassButton
+                    size="sm"
+                    variant="outline"
+                    icon={<RefreshCw size={14} aria-hidden />}
+                    disabled={isDetectingIcon}
+                    onClick={() => void handleDetectModpackIcon()}
+                    data-testid="instance-icon-detect-btn"
+                  >
+                    {isDetectingIcon
+                      ? t('instance.iconDetecting')
+                      : t('instance.iconDetectModpack')}
+                  </GlassButton>
+                  {editIconUrl !== null ? (
+                    <GlassButton
+                      size="sm"
+                      variant="ghost"
+                      icon={<RotateCcw size={14} aria-hidden />}
+                      onClick={() => setEditIconUrl(null)}
+                      data-testid="instance-icon-reset-btn"
+                    >
+                      {t('instance.iconReset')}
+                    </GlassButton>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
             <div className={styles.field}>
               <label htmlFor="inst-edit-name" className={styles.fieldLabel}>
                 {t('instance.name')}

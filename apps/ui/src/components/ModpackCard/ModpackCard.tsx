@@ -54,14 +54,14 @@ export function ModpackCard({
           <div className={styles.badges}>
             <span className={styles.badgeModpack}>
               <Sparkles size={11} aria-hidden />
-              Modpack
+              {t('browse.modpackBadge')}
             </span>
             <span className={styles.badgeProvider}>{item.provider}</span>
           </div>
           <h3 className={styles.title} title={item.title}>
             {item.title}
           </h3>
-          <span className={styles.author}>Oleh {item.slug}</span>
+          <span className={styles.author}>{t('browse.byAuthor', { author: item.slug })}</span>
         </div>
       </div>
 

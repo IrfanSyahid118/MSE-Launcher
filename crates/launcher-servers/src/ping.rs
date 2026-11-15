@@ -9,6 +9,11 @@ pub const MAX_PING_PACKET_LEN: i32 = 256 * 1024;
 pub const MAX_PING_JSON_LEN: i32 = 256 * 1024;
 
 pub fn parse_host_port(address: &str) -> (String, u16) {
+    let (host, port, _) = parse_host_port_with_explicit(address);
+    (host, port)
+}
+
+fn parse_host_port_with_explicit(address: &str) -> (String, u16, bool) {
     let trimmed = address.trim();
     if trimmed.starts_with('[') {
         if let Some(close_idx) = trimmed.find(']') {
@@ -16,20 +21,232 @@ pub fn parse_host_port(address: &str) -> (String, u16) {
             let rest = &trimmed[close_idx + 1..];
             if let Some(port_str) = rest.strip_prefix(':') {
                 if let Ok(port) = port_str.parse::<u16>() {
-                    return (host.to_string(), port);
+                    return (host.to_string(), port, true);
                 }
             }
-            return (host.to_string(), 25565);
+            return (host.to_string(), 25565, false);
         }
     }
 
-    if let Some((host, port_str)) = trimmed.split_once(':') {
-        if let Ok(port) = port_str.parse::<u16>() {
-            return (host.to_string(), port);
+    // Do not split bare IPv6 addresses (which contain multiple colons) on ':'.
+    if trimmed.parse::<std::net::IpAddr>().is_ok() {
+        return (trimmed.to_string(), 25565, false);
+    }
+
+    if let Some((host, port_str)) = trimmed.rsplit_once(':') {
+        if !host.contains(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                return (host.to_string(), port, true);
+            }
         }
     }
 
-    (trimmed.to_string(), 25565)
+    (trimmed.to_string(), 25565, false)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SrvCandidate {
+    priority: u16,
+    weight: u16,
+    port: u16,
+    target: String,
+}
+
+fn select_srv_target(mut records: Vec<SrvCandidate>) -> Option<(String, u16)> {
+    records.retain(|r| !r.target.trim().is_empty() && r.target != ".");
+    records.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| b.weight.cmp(&a.weight))
+    });
+    records
+        .into_iter()
+        .next()
+        .map(|r| (r.target.trim_end_matches('.').to_string(), r.port))
+}
+
+#[cfg(windows)]
+async fn resolve_minecraft_srv(host: &str) -> Option<(String, u16)> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::WIN32_ERROR;
+    use windows::Win32::NetworkManagement::Dns::{
+        DnsFree, DnsFreeRecordList, DnsQuery_W, DNS_QUERY_STANDARD, DNS_RECORDW, DNS_TYPE_SRV,
+    };
+
+    let qname = format!("_minecraft._tcp.{}", host.trim_end_matches('.'));
+    tokio::task::spawn_blocking(move || {
+        let wide: Vec<u16> = OsStr::new(&qname).encode_wide().chain(Some(0)).collect();
+        let mut results_ptr: *mut DNS_RECORDW = std::ptr::null_mut();
+        let status = unsafe {
+            DnsQuery_W(
+                PCWSTR(wide.as_ptr()),
+                DNS_TYPE_SRV,
+                DNS_QUERY_STANDARD,
+                None,
+                (&mut results_ptr as *mut *mut DNS_RECORDW).cast(),
+                None,
+            )
+        };
+        if status != WIN32_ERROR(0) || results_ptr.is_null() {
+            if !results_ptr.is_null() {
+                unsafe { DnsFree(Some(results_ptr.cast()), DnsFreeRecordList) };
+            }
+            return None;
+        }
+
+        let mut candidates = Vec::new();
+        let mut cur = results_ptr;
+        while !cur.is_null() {
+            unsafe {
+                let rec = &*cur;
+                if rec.wType == DNS_TYPE_SRV.0 {
+                    let srv = &rec.Data.Srv;
+                    if !srv.pNameTarget.0.is_null() {
+                        let mut len = 0usize;
+                        while *srv.pNameTarget.0.add(len) != 0 {
+                            len += 1;
+                        }
+                        let target = String::from_utf16_lossy(std::slice::from_raw_parts(
+                            srv.pNameTarget.0,
+                            len,
+                        ));
+                        candidates.push(SrvCandidate {
+                            priority: srv.wPriority,
+                            weight: srv.wWeight,
+                            port: srv.wPort,
+                            target,
+                        });
+                    }
+                }
+                cur = rec.pNext;
+            }
+        }
+
+        unsafe { DnsFree(Some(results_ptr.cast()), DnsFreeRecordList) };
+        select_srv_target(candidates)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[cfg(not(windows))]
+async fn resolve_minecraft_srv(host: &str) -> Option<(String, u16)> {
+    let qname = format!("_minecraft._tcp.{}", host.trim_end_matches('.'));
+    let mut query = Vec::with_capacity(64);
+    let tx_id: u16 = 0x4D43;
+    query.extend_from_slice(&tx_id.to_be_bytes());
+    query.extend_from_slice(&0x0100u16.to_be_bytes()); // standard recursive query
+    query.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT = 1
+    query.extend_from_slice(&[0u8; 6]); // ANCOUNT, NSCOUNT, ARCOUNT
+    for label in qname.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        query.push(label.len() as u8);
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.push(0);
+    query.extend_from_slice(&33u16.to_be_bytes()); // QTYPE = SRV
+    query.extend_from_slice(&1u16.to_be_bytes()); // QCLASS = IN
+
+    let server_ip = std::fs::read_to_string("/etc/resolv.conf")
+        .ok()
+        .and_then(|c| {
+            c.lines().find_map(|l| {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                (parts.first() == Some(&"nameserver"))
+                    .then(|| parts.get(1).copied())
+                    .flatten()
+                    .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+            })
+        })
+        .unwrap_or_else(|| std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1)));
+
+    let bind_addr = if server_ip.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let sock = tokio::net::UdpSocket::bind(bind_addr).await.ok()?;
+    sock.send_to(&query, (server_ip, 53)).await.ok()?;
+    let mut resp = [0u8; 1024];
+    let (n, _) = sock.recv_from(&mut resp).await.ok()?;
+    parse_srv_dns_response(&resp[..n], tx_id)
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn read_dns_name(packet: &[u8], mut offset: usize) -> Option<(String, usize)> {
+    let mut labels = Vec::new();
+    let mut jumped = false;
+    let mut next_offset = offset;
+    for _ in 0..64 {
+        let len = *packet.get(offset)?;
+        if len == 0 {
+            if !jumped {
+                next_offset = offset + 1;
+            }
+            return Some((labels.join("."), next_offset));
+        }
+        if (len & 0xC0) == 0xC0 {
+            let b2 = *packet.get(offset + 1)?;
+            let ptr = (((len & 0x3F) as usize) << 8) | (b2 as usize);
+            if !jumped {
+                next_offset = offset + 2;
+                jumped = true;
+            }
+            offset = ptr;
+            continue;
+        }
+        let end = offset.checked_add(1 + len as usize)?;
+        let label = std::str::from_utf8(packet.get(offset + 1..end)?).ok()?;
+        labels.push(label.to_string());
+        offset = end;
+        if !jumped {
+            next_offset = offset;
+        }
+    }
+    None
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn parse_srv_dns_response(packet: &[u8], expected_tx_id: u16) -> Option<(String, u16)> {
+    if packet.len() < 12 || u16::from_be_bytes([packet[0], packet[1]]) != expected_tx_id {
+        return None;
+    }
+    let qdcount = u16::from_be_bytes([packet[4], packet[5]]);
+    let ancount = u16::from_be_bytes([packet[6], packet[7]]);
+    let mut off = 12;
+    for _ in 0..qdcount {
+        let (_, next) = read_dns_name(packet, off)?;
+        off = next.checked_add(4)?;
+    }
+    let mut candidates = Vec::new();
+    for _ in 0..ancount {
+        let (_, after_name) = read_dns_name(packet, off)?;
+        let header = packet.get(after_name..after_name + 10)?;
+        let rtype = u16::from_be_bytes([header[0], header[1]]);
+        let rdlen = u16::from_be_bytes([header[8], header[9]]) as usize;
+        let rdata_start = after_name + 10;
+        let rdata_end = rdata_start.checked_add(rdlen)?;
+        if rtype == 33 && rdlen >= 7 && rdata_end <= packet.len() {
+            let priority = u16::from_be_bytes([packet[rdata_start], packet[rdata_start + 1]]);
+            let weight = u16::from_be_bytes([packet[rdata_start + 2], packet[rdata_start + 3]]);
+            let port = u16::from_be_bytes([packet[rdata_start + 4], packet[rdata_start + 5]]);
+            if let Some((target, _)) = read_dns_name(packet, rdata_start + 6) {
+                candidates.push(SrvCandidate {
+                    priority,
+                    weight,
+                    port,
+                    target,
+                });
+            }
+        }
+        off = rdata_end;
+    }
+    select_srv_target(candidates)
 }
 
 pub fn encode_varint(value: i32) -> Vec<u8> {
@@ -140,7 +357,7 @@ pub async fn query_minecraft_server_status(
     timeout_duration: Duration,
 ) -> ServerPingStatus {
     let checked_at = Utc::now().to_rfc3339();
-    let (host, port) = parse_host_port(address);
+    let (host, port, explicit_port) = parse_host_port_with_explicit(address);
 
     if host.is_empty() {
         return ServerPingStatus {
@@ -157,14 +374,26 @@ pub async fn query_minecraft_server_status(
     }
 
     let ping_fut = async {
+        let (connect_host, connect_port) = if !explicit_port
+            && port == 25565
+            && !host.eq_ignore_ascii_case("localhost")
+            && host.parse::<std::net::IpAddr>().is_err()
+        {
+            resolve_minecraft_srv(&host)
+                .await
+                .unwrap_or_else(|| (host.clone(), port))
+        } else {
+            (host.clone(), port)
+        };
+
         let started_at = Instant::now();
-        let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
+        let mut stream = TcpStream::connect((connect_host.as_str(), connect_port)).await?;
         let latency_ms = started_at.elapsed().as_millis().max(1) as u32;
 
         let mut handshake_body = encode_varint(0x00);
         handshake_body.extend(encode_varint(767));
-        handshake_body.extend(encode_mc_string(&host));
-        handshake_body.extend_from_slice(&port.to_be_bytes());
+        handshake_body.extend(encode_mc_string(&connect_host));
+        handshake_body.extend_from_slice(&connect_port.to_be_bytes());
         handshake_body.extend(encode_varint(1));
 
         let mut handshake_packet = encode_varint(handshake_body.len() as i32);
@@ -295,5 +524,40 @@ pub async fn query_minecraft_server_status(
             favicon: None,
             checked_at,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_h14_ipv6_host_port_and_srv_selection() {
+        assert_eq!(parse_host_port("::1"), ("::1".to_string(), 25565));
+        assert_eq!(parse_host_port("[::1]:25577"), ("::1".to_string(), 25577));
+        assert_eq!(
+            parse_host_port("2001:db8::8080"),
+            ("2001:db8::8080".to_string(), 25565)
+        );
+        let (_, _, explicit_bare) = parse_host_port_with_explicit("play.example.net");
+        let (_, _, explicit_port) = parse_host_port_with_explicit("play.example.net:25566");
+        assert!(!explicit_bare);
+        assert!(explicit_port);
+
+        let selected = select_srv_target(vec![
+            SrvCandidate {
+                priority: 10,
+                weight: 5,
+                port: 25566,
+                target: "backup.example.net.".to_string(),
+            },
+            SrvCandidate {
+                priority: 5,
+                weight: 20,
+                port: 25570,
+                target: "mc1.example.net.".to_string(),
+            },
+        ]);
+        assert_eq!(selected, Some(("mc1.example.net".to_string(), 25570)));
     }
 }

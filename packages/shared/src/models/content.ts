@@ -149,6 +149,8 @@ export interface InstallModpackRequest {
   provider: ContentProviderId
   versionId: string
   instanceName?: string | undefined
+  projectId?: string | undefined
+  iconUrl?: string | null | undefined
 }
 
 

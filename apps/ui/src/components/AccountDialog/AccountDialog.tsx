@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { LauncherError, usernameSchema } from '@mc/shared'
 import type { DeviceCodeInfo } from '@mc/shared'
@@ -34,11 +34,20 @@ export function AccountDialog({ open, onOpenChange }: AccountDialogProps): React
   const [validationError, setValidationError] = useState<string | null>(null)
   const [deviceCode, setDeviceCode] = useState<DeviceCodeInfo | null>(null)
   const [microsoftError, setMicrosoftError] = useState<string | null>(null)
+  const microsoftTaskIdRef = useRef<string | null>(null)
 
   const busy = createAccount.isPending || setActiveAccount.isPending
   const microsoftBusy = beginMicrosoft.isPending || completeMicrosoft.isPending
 
+  const cancelMicrosoftSignIn = (): void => {
+    const taskId = microsoftTaskIdRef.current
+    if (!taskId) return
+    microsoftTaskIdRef.current = null
+    void invoke('tasks:cancel', { taskId }).catch(() => undefined)
+  }
+
   const reset = (): void => {
+    cancelMicrosoftSignIn()
     setUsername('')
     setValidationError(null)
     setDeviceCode(null)
@@ -100,20 +109,34 @@ export function AccountDialog({ open, onOpenChange }: AccountDialogProps): React
       onSuccess: (code) => {
         setDeviceCode(code)
         openVerificationPage(code.verificationUri)
-        completeMicrosoft.mutate(code, {
-          onSuccess: async (account) => {
-            try {
-              await setActiveAccount.mutateAsync(account.id)
-            } catch {
-              // Account is already saved and selectable from the account menu.
-            }
-            pushToast(t('account.microsoftSuccess', { username: account.username }))
-            handleOpenChange(false)
+        const taskId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `ms-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`
+        microsoftTaskIdRef.current = taskId
+        completeMicrosoft.mutate(
+          { ...code, taskId },
+          {
+            onSuccess: async (account) => {
+              microsoftTaskIdRef.current = null
+              try {
+                await setActiveAccount.mutateAsync(account.id)
+              } catch {
+                // Account is already saved and selectable from the account menu.
+              }
+              pushToast(t('account.microsoftSuccess', { username: account.username }))
+              handleOpenChange(false)
+            },
+            onError: (error) => {
+              microsoftTaskIdRef.current = null
+              if (error instanceof LauncherError && error.code === 'CANCELLED') {
+                setDeviceCode(null)
+                return
+              }
+              setMicrosoftError(describeMicrosoftError(error))
+            },
           },
-          onError: (error) => {
-            setMicrosoftError(describeMicrosoftError(error))
-          },
-        })
+        )
       },
       onError: (error) => {
         setMicrosoftError(describeMicrosoftError(error))
@@ -195,10 +218,10 @@ export function AccountDialog({ open, onOpenChange }: AccountDialogProps): React
                 variant="ghost"
                 onClick={() => {
                   void navigator.clipboard.writeText(deviceCode.userCode)
-                  pushToast('Kode disalin ke clipboard!')
+                  pushToast(t('account.codeCopied'))
                 }}
               >
-                Salin Kode
+                {t('account.copyCode')}
               </GlassButton>
               <GlassButton
                 size="sm"
@@ -215,15 +238,27 @@ export function AccountDialog({ open, onOpenChange }: AccountDialogProps): React
             {microsoftError}
           </p>
         ) : null}
-        <GlassButton
-          variant="outline"
-          size="sm"
-          onClick={startMicrosoft}
-          disabled={microsoftBusy || busy}
-          data-testid="microsoft-signin"
-        >
-          {completeMicrosoft.isPending ? t('account.microsoftWaiting') : t('account.microsoftSignIn')}
-        </GlassButton>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <GlassButton
+            variant="outline"
+            size="sm"
+            onClick={startMicrosoft}
+            disabled={microsoftBusy || busy}
+            data-testid="microsoft-signin"
+          >
+            {completeMicrosoft.isPending ? t('account.microsoftWaiting') : t('account.microsoftSignIn')}
+          </GlassButton>
+          {completeMicrosoft.isPending ? (
+            <GlassButton
+              variant="ghost"
+              size="sm"
+              onClick={cancelMicrosoftSignIn}
+              data-testid="microsoft-cancel"
+            >
+              {t('account.microsoftCancel')}
+            </GlassButton>
+          ) : null}
+        </div>
       </section>
     </GlassDialog>
   )

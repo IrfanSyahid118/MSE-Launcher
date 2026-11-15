@@ -12,6 +12,7 @@ zip = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 dunce = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

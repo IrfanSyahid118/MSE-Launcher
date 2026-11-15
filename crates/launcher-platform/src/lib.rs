@@ -31,12 +31,7 @@ pub struct DataPaths {
 
 impl DataPaths {
     pub fn new(root: impl AsRef<Path>) -> Self {
-        let root_ref = root.as_ref();
-        let root = if root_ref.exists() {
-            dunce::canonicalize(root_ref).unwrap_or_else(|_| root_ref.to_path_buf())
-        } else {
-            root_ref.to_path_buf()
-        };
+        let root = launcher_security::canonicalize_with_tail(root.as_ref());
         let shared = root.join("shared");
         let cache = root.join("cache");
 
@@ -64,7 +59,9 @@ impl DataPaths {
 
     pub fn ensure_root_secure(&self) -> Result<(), launcher_types::LauncherErrorPayload> {
         launcher_security::validate_data_root_candidate(&self.root)?;
-        launcher_security::ensure_secure_dir(&self.root, true)
+        launcher_security::ensure_secure_dir(&self.root, true)?;
+        let canonical_root = launcher_security::canonicalize_with_tail(&self.root);
+        launcher_security::validate_data_root_candidate(&canonical_root)
     }
 }
 

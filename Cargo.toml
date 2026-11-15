@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0-beta"
+version = "1.0.0"
 edition = "2021"
 authors = ["MSE Launcher Contributors"]
 license = "GPL-3.0-or-later"

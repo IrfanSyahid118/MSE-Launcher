@@ -19,7 +19,6 @@ use crate::curseforge::{
     get_curseforge_project_with_base, list_curseforge_versions_with_base,
     search_curseforge_with_base, to_content_version as cf_to_version, API_BASE as CF_API_BASE,
 };
-use crate::modpack::install_modpack_with_base_and_cancel;
 use crate::modrinth::{
     get_modrinth_project, list_modrinth_versions, search_modrinth,
     to_content_version as mr_to_version, API_BASE as MR_API_BASE,
@@ -76,9 +75,19 @@ impl ContentService {
         instances: InstancesStore,
         secrets: SecretStore,
     ) -> Self {
+        Self::with_http_client(paths, HttpClient::new(), downloader, instances, secrets)
+    }
+
+    pub fn with_http_client(
+        paths: DataPaths,
+        http: HttpClient,
+        downloader: DownloadManager,
+        instances: InstancesStore,
+        secrets: SecretStore,
+    ) -> Self {
         Self {
             paths,
-            http: HttpClient::new(),
+            http,
             downloader,
             instances,
             secrets,
@@ -389,10 +398,21 @@ impl ContentService {
         provider: ContentProviderId,
         version_id: &str,
     ) -> Result<ContentInstallPlan, LauncherErrorPayload> {
+        self.plan_with_world(instance_id, provider, version_id, None)
+            .await
+    }
+
+    pub async fn plan_with_world(
+        &self,
+        instance_id: &str,
+        provider: ContentProviderId,
+        version_id: &str,
+        world_id: Option<&str>,
+    ) -> Result<ContentInstallPlan, LauncherErrorPayload> {
         let instance = self.instances.get(instance_id)?;
         let cf_key = self.curseforge_api_key();
         let api_base = self.curseforge_api_base();
-        build_install_plan_with_bases(
+        let mut plan = build_install_plan_with_bases(
             &self.http,
             &instance,
             provider,
@@ -401,7 +421,39 @@ impl ContentService {
             MR_API_BASE,
             &api_base,
         )
-        .await
+        .await?;
+
+        let needs_world = plan.target.content_type == ContentType::Datapack
+            || plan
+                .dependencies
+                .iter()
+                .any(|d| d.content_type == ContentType::Datapack);
+        if needs_world {
+            if let Some(wid) = world_id.map(str::trim).filter(|s| !s.is_empty()) {
+                let clean_wid = launcher_security::validate_single_filename(wid)?;
+                let mc_dir =
+                    launcher_security::safe_subpath(&self.paths.instances_dir, &instance.id)?
+                        .join("minecraft");
+                let saves_dir = mc_dir.join("saves");
+                let world_dir = launcher_security::safe_subpath(&saves_dir, clean_wid)?;
+                launcher_security::ensure_descendants_no_symlink(
+                    &self.paths.instances_dir,
+                    &world_dir,
+                )?;
+                if !world_dir.is_dir() || !world_dir.join("level.dat").is_file() {
+                    return Err(LauncherErrorPayload::not_found(format!(
+                        "World tujuan '{}' tidak ditemukan pada instance ini.",
+                        clean_wid
+                    )));
+                }
+            } else {
+                plan.warnings.push(
+                    "Datapack memerlukan pemilihan world tujuan sebelum pemasangan.".to_string(),
+                );
+            }
+        }
+
+        Ok(plan)
     }
 
     pub async fn install(
@@ -430,7 +482,9 @@ impl ContentService {
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Instance, LauncherErrorPayload> {
         check_install_cancelled(&cancel_flag)?;
-        let plan = self.plan(instance_id, provider, version_id).await?;
+        let plan = self
+            .plan_with_world(instance_id, provider, version_id, world_id)
+            .await?;
         self.install_plan_with_cancel(instance_id, plan, world_id, cancel_flag)
             .await
     }
@@ -463,42 +517,150 @@ impl ContentService {
         let mut to_install = vec![plan.target];
         to_install.extend(plan.dependencies);
 
-        for entry in to_install {
-            check_install_cancelled(&cancel_flag)?;
-            let v = entry.version;
-            let url = match v.download_url {
-                Some(u) => u,
-                None => continue,
-            };
+        if let Some(blocked) = to_install
+            .iter()
+            .find(|entry| entry.version.download_url.is_none())
+        {
+            return Err(LauncherErrorPayload::distribution_blocked(format!(
+                "Berkas '{}' ({}) tidak menyediakan tautan unduhan langsung dari penyedia.",
+                blocked.version.file_name, blocked.version.project_id
+            )));
+        }
 
-            let clean_name = Self::safe_filename(&v.file_name)?;
-            let target_dir = Self::content_folder(&mc_dir, entry.content_type, world_id)?;
-            launcher_security::ensure_dir_within(&mc_dir, &target_dir, false)?;
+        enum RollbackArtifact {
+            File { parent: PathBuf, path: PathBuf },
+            Dir { parent: PathBuf, path: PathBuf },
+        }
+        enum DeferredRemoval {
+            File { parent: PathBuf, path: PathBuf },
+            Dir { parent: PathBuf, path: PathBuf },
+        }
 
-            let mut recorded_world_folder = world_id.map(|s| s.to_string());
+        let mut created_artifacts: Vec<RollbackArtifact> = Vec::new();
+        let mut deferred_removals: Vec<DeferredRemoval> = Vec::new();
 
-            if entry.content_type == ContentType::World {
-                let staging_dir = self
-                    .paths
-                    .root
-                    .join("temp")
-                    .join(format!("world-extract-{}", uuid::Uuid::new_v4()));
-                let archive_path = staging_dir.join(&clean_name);
-                let extract_dir = staging_dir.join("extracted");
+        let install_res: Result<(), LauncherErrorPayload> = async {
+            for entry in to_install {
+                check_install_cancelled(&cancel_flag)?;
+                let v = entry.version;
+                let url = v.download_url.ok_or_else(|| {
+                    LauncherErrorPayload::distribution_blocked(format!(
+                        "Berkas '{}' ({}) tidak menyediakan tautan unduhan langsung dari penyedia.",
+                        v.file_name, v.project_id
+                    ))
+                })?;
 
-                let extract_res: Result<String, LauncherErrorPayload> = async {
-                    fs::create_dir_all(&staging_dir).map_err(|e| {
-                        LauncherErrorPayload::file_system(format!(
-                            "Gagal membuat folder sementara world: {}",
-                            e
-                        ))
-                    })?;
+                let clean_name = Self::safe_filename(&v.file_name)?;
+                let target_dir = Self::content_folder(&mc_dir, entry.content_type, world_id)?;
+                launcher_security::ensure_dir_within(&mc_dir, &target_dir, false)?;
+
+                let mut recorded_world_folder = world_id.map(|s| s.to_string());
+
+                if entry.content_type == ContentType::World {
+                    let staging_dir = self
+                        .paths
+                        .root
+                        .join("temp")
+                        .join(format!("world-extract-{}", uuid::Uuid::new_v4()));
+                    let archive_path = staging_dir.join(&clean_name);
+                    let extract_dir = staging_dir.join("extracted");
+
+                    let extract_res: Result<(String, PathBuf, bool), LauncherErrorPayload> =
+                        async {
+                            fs::create_dir_all(&staging_dir).map_err(|e| {
+                                LauncherErrorPayload::file_system(format!(
+                                    "Gagal membuat folder sementara world: {}",
+                                    e
+                                ))
+                            })?;
+
+                            self.downloader
+                                .download_all(
+                                    vec![DownloadTask {
+                                        url,
+                                        destination: archive_path.clone(),
+                                        expected_sha1: v.sha1.clone(),
+                                        expected_sha256: None,
+                                        expected_size: None,
+                                    }],
+                                    |_| {},
+                                    Arc::clone(&cancel_flag),
+                                )
+                                .await
+                                .map_err(|e| map_cancel_err(&cancel_flag, e))?;
+
+                            check_install_cancelled(&cancel_flag)?;
+                            launcher_archive::extract_zip(&archive_path, &extract_dir, &[])?;
+
+                            let world_root = find_world_root(&extract_dir).ok_or_else(|| {
+                                LauncherErrorPayload::invalid_input(
+                                    "Arsip world tidak mengandung berkas level.dat yang valid.",
+                                )
+                            })?;
+
+                            let raw_folder_name = if world_root == extract_dir {
+                                Path::new(&clean_name)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .filter(|s| !s.trim().is_empty())
+                                    .unwrap_or("world")
+                                    .to_string()
+                            } else {
+                                world_root
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .ok_or_else(|| {
+                                        LauncherErrorPayload::invalid_input(
+                                            "Nama folder world dalam arsip tidak valid.",
+                                        )
+                                    })?
+                                    .to_string()
+                            };
+
+                            let folder_name = Self::safe_filename(&raw_folder_name)?;
+                            let dest_world =
+                                launcher_security::safe_subpath(&target_dir, &folder_name)?;
+                            if dest_world.parent() != Some(target_dir.as_path()) {
+                                return Err(LauncherErrorPayload::invalid_input(
+                                    "Folder world tidak valid.",
+                                ));
+                            }
+
+                            let existed_before = fs::symlink_metadata(&dest_world).is_ok();
+                            if existed_before {
+                                launcher_security::safe_remove_dir_all_within(
+                                    &target_dir,
+                                    &dest_world,
+                                )?;
+                            }
+
+                            move_dir_contents_or_rename(&world_root, &dest_world)?;
+                            Ok((folder_name, dest_world, existed_before))
+                        }
+                        .await;
+
+                    let _ = launcher_security::safe_remove_dir_all_within(
+                        &self.paths.root,
+                        &staging_dir,
+                    );
+                    let (folder_name, dest_world, existed_before) = extract_res?;
+                    if !existed_before {
+                        created_artifacts.push(RollbackArtifact::Dir {
+                            parent: target_dir.clone(),
+                            path: dest_world,
+                        });
+                    }
+                    recorded_world_folder = Some(folder_name);
+                } else {
+                    let dest_file = launcher_security::safe_subpath(&target_dir, &clean_name)?;
+                    launcher_security::ensure_descendants_no_symlink(&target_dir, &dest_file)?;
+                    let existed_before = fs::symlink_metadata(&dest_file).is_ok();
 
                     self.downloader
                         .download_all(
                             vec![DownloadTask {
                                 url,
-                                destination: archive_path.clone(),
+                                destination: dest_file.clone(),
                                 expected_sha1: v.sha1.clone(),
                                 expected_sha256: None,
                                 expected_size: None,
@@ -509,136 +671,107 @@ impl ContentService {
                         .await
                         .map_err(|e| map_cancel_err(&cancel_flag, e))?;
 
-                    check_install_cancelled(&cancel_flag)?;
-                    launcher_archive::extract_zip(&archive_path, &extract_dir, &[])?;
-
-                    let world_root = find_world_root(&extract_dir).ok_or_else(|| {
-                        LauncherErrorPayload::invalid_input(
-                            "Arsip world tidak mengandung berkas level.dat yang valid.",
-                        )
-                    })?;
-
-                    let raw_folder_name = if world_root == extract_dir {
-                        Path::new(&clean_name)
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .filter(|s| !s.trim().is_empty())
-                            .unwrap_or("world")
-                            .to_string()
-                    } else {
-                        world_root
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .ok_or_else(|| {
-                                LauncherErrorPayload::invalid_input(
-                                    "Nama folder world dalam arsip tidak valid.",
-                                )
-                            })?
-                            .to_string()
-                    };
-
-                    let folder_name = Self::safe_filename(&raw_folder_name)?;
-                    let dest_world = launcher_security::safe_subpath(&target_dir, &folder_name)?;
-                    if dest_world.parent() != Some(target_dir.as_path()) {
-                        return Err(LauncherErrorPayload::invalid_input(
-                            "Folder world tidak valid.",
-                        ));
+                    if !existed_before {
+                        created_artifacts.push(RollbackArtifact::File {
+                            parent: target_dir.clone(),
+                            path: dest_file,
+                        });
                     }
-
-                    if fs::symlink_metadata(&dest_world).is_ok() {
-                        launcher_security::safe_remove_dir_all_within(&target_dir, &dest_world)?;
-                    }
-
-                    move_dir_contents_or_rename(&world_root, &dest_world)?;
-                    Ok(folder_name)
                 }
-                .await;
 
-                let _ =
-                    launcher_security::safe_remove_dir_all_within(&self.paths.root, &staging_dir);
-                recorded_world_folder = Some(extract_res?);
-            } else {
-                let dest_file = launcher_security::safe_subpath(&target_dir, &clean_name)?;
-                launcher_security::ensure_descendants_no_symlink(&target_dir, &dest_file)?;
-
-                self.downloader
-                    .download_all(
-                        vec![DownloadTask {
-                            url,
-                            destination: dest_file,
-                            expected_sha1: v.sha1.clone(),
-                            expected_sha256: None,
-                            expected_size: None,
-                        }],
-                        |_| {},
-                        Arc::clone(&cancel_flag),
-                    )
-                    .await
-                    .map_err(|e| map_cancel_err(&cancel_flag, e))?;
-            }
-
-            if let Some(pos) = instance
-                .content
-                .iter()
-                .position(|c| c.provider == v.provider && c.project_id == v.project_id)
-            {
-                let old_entry = instance.content.remove(pos);
-                if entry.content_type == ContentType::World {
-                    if old_entry.world_folder != recorded_world_folder {
-                        if let Some(ref old_wf) = old_entry.world_folder {
-                            if let Ok(clean_wf) =
-                                launcher_security::validate_single_filename(old_wf.trim())
-                            {
-                                if let Ok(old_world_dir) =
-                                    launcher_security::safe_subpath(&target_dir, clean_wf)
+                if let Some(pos) = instance
+                    .content
+                    .iter()
+                    .position(|c| c.provider == v.provider && c.project_id == v.project_id)
+                {
+                    let old_entry = instance.content.remove(pos);
+                    if entry.content_type == ContentType::World {
+                        if old_entry.world_folder != recorded_world_folder {
+                            if let Some(ref old_wf) = old_entry.world_folder {
+                                if let Ok(clean_wf) =
+                                    launcher_security::validate_single_filename(old_wf.trim())
                                 {
-                                    if old_world_dir.parent() == Some(target_dir.as_path()) {
-                                        let _ = launcher_security::safe_remove_dir_all_within(
-                                            &target_dir,
-                                            &old_world_dir,
-                                        );
+                                    if let Ok(old_world_dir) =
+                                        launcher_security::safe_subpath(&target_dir, clean_wf)
+                                    {
+                                        if old_world_dir.parent() == Some(target_dir.as_path()) {
+                                            deferred_removals.push(DeferredRemoval::Dir {
+                                                parent: target_dir.clone(),
+                                                path: old_world_dir,
+                                            });
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                } else if old_entry.file_name != clean_name {
-                    // Remove stale JAR if the filename changes so duplicate mods do not collide.
-                    if let Ok(clean_old) =
-                        launcher_security::validate_single_filename(old_entry.file_name.trim())
-                    {
-                        if let Ok(old_file) =
-                            launcher_security::safe_subpath(&target_dir, clean_old)
+                    } else if old_entry.file_name != clean_name {
+                        // Queue stale JAR removal until metadata persistence succeeds.
+                        if let Ok(clean_old) =
+                            launcher_security::validate_single_filename(old_entry.file_name.trim())
                         {
-                            let _ =
-                                launcher_security::safe_remove_file_within(&target_dir, &old_file);
-                        }
-                        if let Ok(old_disabled) = launcher_security::safe_subpath(
-                            &target_dir,
-                            &format!("{clean_old}.disabled"),
-                        ) {
-                            let _ = launcher_security::safe_remove_file_within(
+                            if let Ok(old_file) =
+                                launcher_security::safe_subpath(&target_dir, clean_old)
+                            {
+                                deferred_removals.push(DeferredRemoval::File {
+                                    parent: target_dir.clone(),
+                                    path: old_file,
+                                });
+                            }
+                            if let Ok(old_disabled) = launcher_security::safe_subpath(
                                 &target_dir,
-                                &old_disabled,
-                            );
+                                &format!("{clean_old}.disabled"),
+                            ) {
+                                deferred_removals.push(DeferredRemoval::File {
+                                    parent: target_dir.clone(),
+                                    path: old_disabled,
+                                });
+                            }
                         }
                     }
                 }
+
+                instance.content.push(InstanceContentEntry {
+                    provider: v.provider,
+                    project_id: v.project_id,
+                    version_id: v.id,
+                    content_type: entry.content_type,
+                    file_name: clean_name,
+                    sha1: v.sha1.unwrap_or_default(),
+                    world_folder: recorded_world_folder,
+                    disabled: Some(false),
+                });
             }
 
-            instance.content.push(InstanceContentEntry {
-                provider: v.provider,
-                project_id: v.project_id,
-                version_id: v.id,
-                content_type: entry.content_type,
-                file_name: clean_name,
-                sha1: v.sha1.unwrap_or_default(),
-                world_folder: recorded_world_folder,
-                disabled: Some(false),
-            });
+            self.instances.update(instance.clone())?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(err) = install_res {
+            for artifact in created_artifacts.into_iter().rev() {
+                match artifact {
+                    RollbackArtifact::File { parent, path } => {
+                        let _ = launcher_security::safe_remove_file_within(&parent, &path);
+                    }
+                    RollbackArtifact::Dir { parent, path } => {
+                        let _ = launcher_security::safe_remove_dir_all_within(&parent, &path);
+                    }
+                }
+            }
+            return Err(err);
         }
 
-        self.instances.update(instance.clone())?;
+        for removal in deferred_removals {
+            match removal {
+                DeferredRemoval::File { parent, path } => {
+                    let _ = launcher_security::safe_remove_file_within(&parent, &path);
+                }
+                DeferredRemoval::Dir { parent, path } => {
+                    let _ = launcher_security::safe_remove_dir_all_within(&parent, &path);
+                }
+            }
+        }
+
         Ok(instance)
     }
 
@@ -809,20 +942,41 @@ impl ContentService {
         instance_id: &str,
     ) -> Result<Vec<ContentUpdateInfo>, LauncherErrorPayload> {
         let instance = self.instances.get(instance_id)?;
-        let filter = ContentFilter {
-            minecraft_version: Some(instance.minecraft_version.clone()),
-            loader: match instance.loader.loader_type {
-                launcher_types::LoaderType::Vanilla => None,
-                l => Some(format!("{:?}", l).to_lowercase()),
-            },
-            featured: None,
+        let instance_loader = match instance.loader.loader_type {
+            launcher_types::LoaderType::Vanilla => None,
+            l => Some(format!("{:?}", l).to_lowercase()),
         };
 
         let mut updates = Vec::new();
 
         for entry in &instance.content {
+            if matches!(
+                entry.content_type,
+                ContentType::Modpack | ContentType::World
+            ) {
+                continue;
+            }
+            if entry.project_id.trim().is_empty()
+                || entry.project_id.contains('/')
+                || entry.project_id.contains('\\')
+                || entry.project_id == entry.version_id
+            {
+                continue;
+            }
+            let filter = ContentFilter {
+                minecraft_version: Some(instance.minecraft_version.clone()),
+                loader: match entry.content_type {
+                    ContentType::Mod => instance_loader.clone(),
+                    ContentType::Datapack => Some("datapack".to_string()),
+                    ContentType::Resourcepack
+                    | ContentType::Shader
+                    | ContentType::Modpack
+                    | ContentType::World => None,
+                },
+                featured: None,
+            };
             if let Ok(versions) = self
-                .versions(entry.provider, &entry.project_id, filter.clone())
+                .versions(entry.provider, &entry.project_id, filter)
                 .await
             {
                 if let Some(latest) = versions.first() {
@@ -874,9 +1028,32 @@ impl ContentService {
     where
         F: Fn(&str, u32, u32) + Send + Sync + Clone + 'static,
     {
+        self.install_modpack_with_options(
+            provider,
+            version_id,
+            instance_name,
+            crate::modpack::ModpackInstallOptions::default(),
+            on_progress,
+            cancel_flag,
+        )
+        .await
+    }
+
+    pub async fn install_modpack_with_options<F>(
+        &self,
+        provider: ContentProviderId,
+        version_id: &str,
+        instance_name: Option<&str>,
+        options: crate::modpack::ModpackInstallOptions,
+        on_progress: F,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<Instance, LauncherErrorPayload>
+    where
+        F: Fn(&str, u32, u32) + Send + Sync + Clone + 'static,
+    {
         let cf_key = self.curseforge_api_key();
         let api_base = self.curseforge_api_base();
-        install_modpack_with_base_and_cancel(
+        crate::modpack::install_modpack_with_cancel_and_options(
             &self.paths,
             &self.http,
             &self.downloader,
@@ -886,6 +1063,7 @@ impl ContentService {
             instance_name,
             &cf_key,
             &api_base,
+            options,
             on_progress,
             cancel_flag,
         )

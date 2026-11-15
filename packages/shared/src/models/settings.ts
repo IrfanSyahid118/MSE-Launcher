@@ -91,18 +91,18 @@ export const DEFAULT_THEME: ThemeSettings = {
 
 export const DEFAULT_MEMORY: MemorySettings = {
   defaultMaxMb: 4096,
-  defaultMinMb: 1024,
+  defaultMinMb: 2048,
 }
 
 export const DEFAULT_JAVA: JavaSettings = {
   preferManaged: true,
   customPath: null,
-  jvmPreset: 'default',
+  jvmPreset: 'performance',
   customJvmArgs: '',
 }
 
 export const DEFAULT_DOWNLOADS: DownloadSettings = {
-  parallelism: 8,
+  parallelism: 6,
 }
 
 export const DEFAULT_DISCORD: DiscordSettings = {

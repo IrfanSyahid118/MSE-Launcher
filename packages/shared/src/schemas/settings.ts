@@ -30,7 +30,7 @@ export const javaSettingsSchema = z.object({
 })
 
 export const downloadSettingsSchema = z.object({
-  parallelism: z.number().int().min(1).max(32).default(DEFAULT_DOWNLOADS.parallelism),
+  parallelism: z.number().int().min(1).max(16).default(DEFAULT_DOWNLOADS.parallelism),
 })
 
 export const discordSettingsSchema = z.object({

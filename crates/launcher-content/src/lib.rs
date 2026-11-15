@@ -40,9 +40,17 @@ mod tests {
     fn test_integrations_atomic_write_bug23() {
         let temp = tempfile::tempdir().unwrap();
         let paths = launcher_platform::DataPaths::new(temp.path());
-        let downloader = launcher_download::DownloadManager::new(2);
+        let http_dl = launcher_net::HttpClient::new_loopback_test();
+        let downloader = launcher_download::DownloadManager::with_http_client(2, http_dl.clone());
         let instances = launcher_storage::InstancesStore::new(paths.clone());
-        let service = ContentService::new(paths.clone(), downloader, instances);
+        let secrets = launcher_platform::SecretStore::new(paths.secrets_file.clone());
+        let service = ContentService::with_http_client(
+            paths.clone(),
+            http_dl.clone(),
+            downloader,
+            instances,
+            secrets,
+        );
 
         let status = service.set_curseforge_key(Some("cf-key-12345")).unwrap();
         assert!(status.curseforge.source.is_some());
@@ -175,7 +183,7 @@ mod tests {
             ),
         ]);
 
-        let http = launcher_net::HttpClient::new();
+        let http = launcher_net::HttpClient::new_loopback_test();
         let mr_plan = plan::build_install_plan_with_bases(
             &http,
             &instance,
@@ -212,7 +220,8 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let paths = launcher_platform::DataPaths::new(temp.path());
-        let downloader = launcher_download::DownloadManager::new(2);
+        let http_dl = launcher_net::HttpClient::new_loopback_test();
+        let downloader = launcher_download::DownloadManager::with_http_client(2, http_dl.clone());
         let instances = launcher_storage::InstancesStore::new(paths.clone());
         let instance = instances
             .create(launcher_types::CreateInstanceRequest {
@@ -262,7 +271,14 @@ mod tests {
             warnings: vec![],
         };
 
-        let service = ContentService::new(paths.clone(), downloader, instances);
+        let secrets = launcher_platform::SecretStore::new(paths.secrets_file.clone());
+        let service = ContentService::with_http_client(
+            paths.clone(),
+            http_dl.clone(),
+            downloader,
+            instances,
+            secrets,
+        );
         let updated = service
             .install_plan(&instance.id, plan, None)
             .await
@@ -286,7 +302,7 @@ mod tests {
             Some("AdventureWorld")
         );
 
-        let http = launcher_net::HttpClient::new();
+        let http = launcher_net::HttpClient::new_loopback_test();
         let _ = http.get(&format!("{}/__shutdown", base)).await;
         let _ = handle.join();
     }
@@ -330,7 +346,7 @@ mod tests {
             }
         });
 
-        let http = launcher_net::HttpClient::new();
+        let http = launcher_net::HttpClient::new_loopback_test();
         let err_429 =
             curseforge::get_curseforge_file_with_base(&http, &base, "fake-key", "123", 999)
                 .await
@@ -443,8 +459,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = launcher_platform::DataPaths::new(temp.path());
         let instances = launcher_storage::InstancesStore::new(paths.clone());
-        let downloader = launcher_download::DownloadManager::new(2);
-        let http = launcher_net::HttpClient::new();
+        let http = launcher_net::HttpClient::new_loopback_test();
+        let downloader = launcher_download::DownloadManager::with_http_client(2, http.clone());
         let api_base = format!("{}/v1", base);
 
         let res_err = modpack::install_modpack_with_base(
@@ -519,8 +535,8 @@ mod tests {
             })
             .unwrap();
 
-        let downloader = launcher_download::DownloadManager::new(2);
-        let http = launcher_net::HttpClient::new();
+        let http = launcher_net::HttpClient::new_loopback_test();
+        let downloader = launcher_download::DownloadManager::with_http_client(2, http.clone());
         let service = ContentService::new(paths.clone(), downloader.clone(), instances.clone());
 
         let flag = Arc::new(AtomicBool::new(true));
@@ -683,7 +699,7 @@ mod tests {
             "200 OK",
         )]);
 
-        let http = launcher_net::HttpClient::new();
+        let http = launcher_net::HttpClient::new_loopback_test();
         let official_err = curseforge::get_curseforge_file(&http, "", "42", 99)
             .await
             .expect_err("Direct CurseForge API without key must return ProviderNotConfigured");
@@ -700,5 +716,211 @@ mod tests {
 
         let _ = http.get(&format!("{}/__shutdown", base)).await;
         let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn test_modpack_persists_icon_url_and_modpack_entry() {
+        use std::io::Write;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let mut mrpack_bytes = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut mrpack_bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("modrinth.index.json", opts).unwrap();
+            let index = r#"{"name":"Fabulously Optimized","dependencies":{"minecraft":"1.21.4","fabric-loader":"0.16.10"},"files":[]}"#;
+            zw.write_all(index.as_bytes()).unwrap();
+            zw.finish().unwrap();
+        }
+
+        let (base, handle) = {
+            use std::io::Read;
+            use std::net::TcpListener;
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let base = format!("http://127.0.0.1:{}", addr.port());
+            let base_srv = base.clone();
+            let archive_body = mrpack_bytes.clone();
+            let handle = std::thread::spawn(move || loop {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let req = String::from_utf8_lossy(&buf);
+                let send = |s: &mut std::net::TcpStream, status: &str, ct: &str, body: &[u8]| {
+                    let hdr = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        status, ct, body.len()
+                    );
+                    let _ = s.write_all(hdr.as_bytes());
+                    let _ = s.write_all(body);
+                };
+                if req.contains("GET /__shutdown") {
+                    send(&mut stream, "200 OK", "text/plain", b"");
+                    break;
+                } else if req.contains("GET /v2/version/ver-fo") {
+                    let body = format!(
+                        r#"{{"id":"ver-fo","project_id":"1KVo5zza","name":"FO 1.21.4","version_number":"6.0.0","version_type":"release","game_versions":["1.21.4"],"loaders":["fabric"],"downloads":1,"date_published":"2026-01-01T00:00:00Z","files":[{{"hashes":{{}},"url":"{}/dl/fo.mrpack","filename":"fo.mrpack","primary":true,"size":{}}}],"dependencies":[]}}"#,
+                        base_srv,
+                        archive_body.len()
+                    );
+                    send(&mut stream, "200 OK", "application/json", body.as_bytes());
+                } else if req.contains("GET /v2/project/1KVo5zza") {
+                    let body = format!(
+                        r#"{{"id":"1KVo5zza","slug":"fabulously-optimized","title":"Fabulously Optimized","description":"Perf","body":"","project_type":"modpack","categories":[],"loaders":["fabric"],"game_versions":["1.21.4"],"downloads":1,"icon_url":"{}/icon.webp","updated":"2026-01-01T00:00:00Z"}}"#,
+                        base_srv
+                    );
+                    send(&mut stream, "200 OK", "application/json", body.as_bytes());
+                } else if req.contains("GET /dl/fo.mrpack") {
+                    send(&mut stream, "200 OK", "application/zip", &archive_body);
+                } else {
+                    send(&mut stream, "404 Not Found", "text/plain", b"Not Found");
+                }
+            });
+            (base, handle)
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let paths = launcher_platform::DataPaths::new(temp.path());
+        let instances = launcher_storage::InstancesStore::new(paths.clone());
+        let http = launcher_net::HttpClient::new_loopback_test();
+        let downloader = launcher_download::DownloadManager::with_http_client(2, http.clone());
+        let mr_base = format!("{}/v2", base);
+
+        let installed = {
+            let instances_obs = instances.clone();
+            let paths_obs = paths.clone();
+            let expected_obs = format!("{}/icon.webp", base);
+            let saw_early_icon = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let saw_early_icon_cb = Arc::clone(&saw_early_icon);
+            let result = modpack::install_modpack_with_bases_and_options(
+                &paths,
+                &http,
+                &downloader,
+                &instances,
+                launcher_types::ContentProviderId::Modrinth,
+                "ver-fo",
+                Some("Fabulously Optimized"),
+                "",
+                &mr_base,
+                &base,
+                modpack::ModpackInstallOptions::default(),
+                move |_, completed, total| {
+                    if completed == 2 && total == 3 {
+                        if let Ok(list) = instances_obs.list() {
+                            if let Some(pending) = list.first() {
+                                let marker = paths_obs
+                                    .instances_dir
+                                    .join(&pending.id)
+                                    .join(launcher_storage::MODPACK_INSTALLING_MARKER);
+                                if pending.icon_url.as_deref() == Some(expected_obs.as_str())
+                                    && pending
+                                        .content
+                                        .first()
+                                        .is_some_and(|e| e.content_type == ContentType::Modpack)
+                                    && marker.exists()
+                                {
+                                    saw_early_icon_cb
+                                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    }
+                },
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .expect("Modrinth modpack install with mock server should succeed");
+            assert!(
+                saw_early_icon.load(std::sync::atomic::Ordering::SeqCst),
+                "iconUrl and Modpack content entry must be persisted when stage 2/3 begins"
+            );
+            result
+        };
+
+        let expected_icon = format!("{}/icon.webp", base);
+        assert_eq!(installed.icon_url.as_deref(), Some(expected_icon.as_str()));
+        assert_eq!(installed.content.len(), 1);
+        assert_eq!(installed.content[0].content_type, ContentType::Modpack);
+        assert_eq!(installed.content[0].project_id, "1KVo5zza");
+        assert_eq!(installed.content[0].version_id, "ver-fo");
+        assert_eq!(installed.content[0].file_name, "fo.mrpack");
+        assert_eq!(installed.content[0].sha1, "");
+        assert!(
+            !paths
+                .instances_dir
+                .join(&installed.id)
+                .join(launcher_storage::MODPACK_INSTALLING_MARKER)
+                .exists(),
+            "Installing marker must be removed on completion"
+        );
+
+        let stored = instances.get(&installed.id).unwrap();
+        assert_eq!(stored.icon_url.as_deref(), Some(expected_icon.as_str()));
+        assert_eq!(stored.content[0].content_type, ContentType::Modpack);
+
+        let _ = http.get(&format!("{}/__shutdown", base)).await;
+        let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn test_m5_m12_world_validation_and_check_updates_skip() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = launcher_platform::DataPaths::new(temp.path());
+        let instances = launcher_storage::InstancesStore::new(paths.clone());
+        let mut inst = instances
+            .create(launcher_types::CreateInstanceRequest {
+                name: "M5M12Test".to_string(),
+                minecraft_version: "1.20.4".to_string(),
+                loader: launcher_types::LoaderSpec {
+                    loader_type: launcher_types::LoaderType::Fabric,
+                    version: Some("0.15.0".to_string()),
+                },
+            })
+            .unwrap();
+
+        let saves_dir = paths
+            .instances_dir
+            .join(&inst.id)
+            .join("minecraft")
+            .join("saves");
+        let existing_world = saves_dir.join("MyWorld");
+        std::fs::create_dir_all(&existing_world).unwrap();
+        std::fs::write(existing_world.join("level.dat"), b"level").unwrap();
+
+        inst.content.push(launcher_types::InstanceContentEntry {
+            provider: launcher_types::ContentProviderId::Modrinth,
+            project_id: "1KVo5zza".to_string(),
+            version_id: "ver-pack".to_string(),
+            content_type: ContentType::Modpack,
+            file_name: "pack.mrpack".to_string(),
+            sha1: String::new(),
+            world_folder: None,
+            disabled: Some(false),
+        });
+        inst.content.push(launcher_types::InstanceContentEntry {
+            provider: launcher_types::ContentProviderId::Modrinth,
+            project_id: "mods/sodium.jar".to_string(),
+            version_id: "mods/sodium.jar".to_string(),
+            content_type: ContentType::Mod,
+            file_name: "sodium.jar".to_string(),
+            sha1: String::new(),
+            world_folder: None,
+            disabled: Some(false),
+        });
+        instances.update(inst.clone()).unwrap();
+
+        let service =
+            ContentService::new(paths, launcher_download::DownloadManager::new(1), instances);
+
+        // M12: check_updates should skip modpack & path-based .mrpack entries cleanly
+        let updates = service.check_updates(&inst.id).await.unwrap();
+        assert!(updates.is_empty());
+
+        // M5: validate world_id handling for saves
+        let missing = launcher_security::safe_subpath(&saves_dir, "NoSuchWorld").unwrap();
+        assert!(!missing.exists());
     }
 }

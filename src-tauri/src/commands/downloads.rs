@@ -13,19 +13,32 @@ pub async fn downloads_cleanup(
     let paths = state.paths.clone();
 
     tokio::spawn(async move {
-        let (removed_files, freed_bytes) = clean_temp_and_cache(&paths);
-
-        let _ = app.emit(
-            "task:done",
-            json!({
-                "taskId": task_id_clone,
-                "result": {
-                    "removedFiles": removed_files,
-                    "freedBytes": freed_bytes,
-                    "warnings": Vec::<String>::new(),
-                }
-            }),
-        );
+        let paths_for_task = paths.clone();
+        match tokio::task::spawn_blocking(move || clean_temp_and_cache(&paths_for_task)).await {
+            Ok((removed_files, freed_bytes)) => {
+                let _ = app.emit(
+                    "task:done",
+                    json!({
+                        "taskId": task_id_clone,
+                        "result": {
+                            "removedFiles": removed_files,
+                            "freedBytes": freed_bytes,
+                            "warnings": Vec::<String>::new(),
+                        }
+                    }),
+                );
+            }
+            Err(join_err) => {
+                let err = LauncherErrorPayload::file_system(format!(
+                    "Pembersihan cache gagal dijalankan: {}",
+                    join_err
+                ));
+                let _ = app.emit(
+                    "task:error",
+                    super::task_error_payload(&task_id_clone, &err),
+                );
+            }
+        }
     });
 
     Ok(json!({ "taskId": task_id }))

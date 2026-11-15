@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+test-http = []
+
 [dependencies]
 launcher-types = { path = "../launcher-types" }
 reqwest = { workspace = true }

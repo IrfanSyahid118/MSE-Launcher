@@ -98,7 +98,12 @@ pub async fn content_plan(
 ) -> Result<ContentInstallPlan, LauncherErrorPayload> {
     state
         .content
-        .plan(&req.instance_id, req.provider, &req.version_id)
+        .plan_with_world(
+            &req.instance_id,
+            req.provider,
+            &req.version_id,
+            req.world_id.as_deref(),
+        )
         .await
 }
 
@@ -210,11 +215,16 @@ pub async fn content_install_modpack(
 
     tokio::spawn(async move {
         let _guard = crate::commands::launch::ActiveTaskGuard::new(task_id_clone.clone());
+        let options = launcher_content::modpack::ModpackInstallOptions {
+            project_id: req.project_id.clone(),
+            icon_url: req.icon_url.clone(),
+        };
         match content
-            .install_modpack_with_cancel(
+            .install_modpack_with_options(
                 req.provider,
                 &req.version_id,
                 req.instance_name.as_deref(),
+                options,
                 on_progress,
                 cancel_flag,
             )

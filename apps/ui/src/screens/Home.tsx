@@ -1,6 +1,7 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Check,
   ChevronDown,
@@ -31,6 +32,7 @@ import { GlassButton } from '../components/GlassButton/GlassButton'
 import { RightSidebar } from '../components/RightSidebar/RightSidebar'
 import { Spinner } from '../components/Spinner/Spinner'
 import { errorMessage, invoke } from '../api/launcher'
+import { registerLaunchTask } from '../api/task-registration'
 import styles from './Home.module.css'
 
 const CreateInstanceDialog = lazy(() =>
@@ -44,13 +46,9 @@ const EMPTY_INSTANCES: Instance[] = []
 type SortMode = 'recent' | 'name'
 type LoaderFilter = 'all' | 'vanilla' | 'fabric' | 'forge' | 'neoforge' | 'quilt'
 
-const SORT_LABEL: Record<SortMode, string> = {
-  recent: 'Last played',
-  name: 'Name',
-}
-
-const LOADER_LABEL: Record<LoaderFilter, string> = {
-  all: 'All loaders',
+const SORT_MODES: SortMode[] = ['recent', 'name']
+const LOADER_FILTERS: LoaderFilter[] = ['all', 'vanilla', 'fabric', 'forge', 'neoforge', 'quilt']
+const LOADER_NAMES: Record<Exclude<LoaderFilter, 'all'>, string> = {
   vanilla: 'Vanilla',
   fabric: 'Fabric',
   forge: 'Forge',
@@ -70,6 +68,8 @@ function loaderBadgeLabel(instance: Instance): string {
 export function Home(): ReactNode {
   const { t, language } = useI18n()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const launchInFlightRef = useRef(false)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const versionsQuery = useVersions(createDialogOpen)
   const instancesQuery = useInstances()
@@ -114,8 +114,10 @@ export function Home(): ReactNode {
     }
   }, [selectedInstance, selectedInstanceId, setSelectedInstance])
 
-  const isSelectedLaunching = Boolean(launchTaskId && launchInstanceId === selectedInstance?.id)
   const isSelectedRunning = Boolean(isGameRunning && launchInstanceId === selectedInstance?.id)
+  const isSelectedLaunching = Boolean(
+    launchTaskId && launchInstanceId === selectedInstance?.id && !isSelectedRunning,
+  )
   const isOtherGameBusy = Boolean((launchTaskId || isGameRunning) && launchInstanceId !== selectedInstance?.id)
 
   const disabledReason = useMemo(() => {
@@ -173,29 +175,37 @@ export function Home(): ReactNode {
   }, [instances, loaderFilter, searchText, sortMode])
 
   const launchInstance = (instance: Instance): void => {
-    if (disabledReason || launchTaskId || isGameRunning) return
+    if (launchInFlightRef.current || launchTaskId !== null || isGameRunning) return
+    if (!account) {
+      pushToast(t('play.reason.account'), 'error')
+      return
+    }
     if (!instance.minecraftVersion) {
       pushToast(t('home.play.unavailable'), 'error')
       navigate(`/instances/${instance.id}`)
       return
     }
+    launchInFlightRef.current = true
     setSelectedInstance(instance.id)
     setLaunchInstanceId(instance.id)
     setLastLaunchInstanceId(instance.id)
-    setLaunchProgress({ stage: t('home.launching'), completed: 0, total: 100 })
+    setLaunchProgress({ stage: t('home.launching'), completed: 0, total: 1000 })
 
     invoke('launch:start', {
       instanceId: instance.id,
       versionId: instance.minecraftVersion,
     })
       .then((res) => {
-        setLaunchTaskId(res.taskId)
+        registerLaunchTask(res.taskId, queryClient)
       })
       .catch((error: unknown) => {
         setLaunchTaskId(null)
         setLaunchProgress(null)
         setLaunchInstanceId(null)
         pushToast(errorMessage(error, t('error.unknown')), 'error')
+      })
+      .finally(() => {
+        launchInFlightRef.current = false
       })
   }
 
@@ -444,7 +454,7 @@ export function Home(): ReactNode {
                   data-testid="home-create-instance"
                 >
                   <Plus size={14} strokeWidth={2.6} aria-hidden />
-                  <span>New instance</span>
+                  <span>{t('home.newInstance')}</span>
                 </button>
               </div>
 
@@ -454,7 +464,7 @@ export function Home(): ReactNode {
                     <Popover.Trigger asChild>
                       <button type="button" className={styles.chipButton} data-testid="home-library-sort">
                         <SlidersHorizontal size={13} aria-hidden />
-                        <span>{SORT_LABEL[sortMode]}</span>
+                        <span>{sortMode === 'recent' ? t('home.sort.recent') : t('home.sort.name')}</span>
                         <ChevronDown size={13} aria-hidden />
                       </button>
                     </Popover.Trigger>
@@ -465,8 +475,8 @@ export function Home(): ReactNode {
                         align="start"
                         sideOffset={6}
                       >
-                        <div className={styles.menuPanel} role="menu" aria-label="Sort instances">
-                          {(Object.keys(SORT_LABEL) as SortMode[]).map((mode) => (
+                        <div className={styles.menuPanel} role="menu" aria-label={t('home.sortMenuAria')}>
+                          {SORT_MODES.map((mode) => (
                             <button
                               key={mode}
                               type="button"
@@ -478,7 +488,7 @@ export function Home(): ReactNode {
                                 setSortOpen(false)
                               }}
                             >
-                              <span>{SORT_LABEL[mode]}</span>
+                              <span>{mode === 'recent' ? t('home.sort.recent') : t('home.sort.name')}</span>
                               {sortMode === mode ? <Check size={13} aria-hidden /> : null}
                             </button>
                           ))}
@@ -495,7 +505,7 @@ export function Home(): ReactNode {
                         data-testid="home-library-filter"
                       >
                         <Filter size={13} aria-hidden />
-                        <span>{LOADER_LABEL[loaderFilter]}</span>
+                        <span>{loaderFilter === 'all' ? t('instances.allLoaders') : LOADER_NAMES[loaderFilter]}</span>
                         <ChevronDown size={13} aria-hidden />
                       </button>
                     </Popover.Trigger>
@@ -506,8 +516,8 @@ export function Home(): ReactNode {
                         align="start"
                         sideOffset={6}
                       >
-                        <div className={styles.menuPanel} role="menu" aria-label="Filter by loader">
-                          {(Object.keys(LOADER_LABEL) as LoaderFilter[]).map((loader) => (
+                        <div className={styles.menuPanel} role="menu" aria-label={t('home.filterMenuAria')}>
+                          {LOADER_FILTERS.map((loader) => (
                             <button
                               key={loader}
                               type="button"
@@ -519,7 +529,7 @@ export function Home(): ReactNode {
                                 setFilterOpen(false)
                               }}
                             >
-                              <span>{LOADER_LABEL[loader]}</span>
+                              <span>{loader === 'all' ? t('instances.allLoaders') : LOADER_NAMES[loader]}</span>
                               {loaderFilter === loader ? <Check size={13} aria-hidden /> : null}
                             </button>
                           ))}
@@ -569,14 +579,23 @@ export function Home(): ReactNode {
               </p>
             ) : (
               <div className={styles.libraryGrid} data-testid="home-library-grid">
-                {libraryInstances.map((instance) => (
-                  <InstanceCard
-                    key={instance.id}
-                    instance={instance}
-                    onLaunch={launchInstance}
-                    isLaunching={Boolean(launchTaskId && launchInstanceId === instance.id) || (isGameRunning && launchInstanceId === instance.id)}
-                  />
-                ))}
+                {libraryInstances.map((instance) => {
+                  const instanceRunning = Boolean(
+                    isGameRunning && launchInstanceId === instance.id,
+                  )
+                  const instanceLaunching = Boolean(
+                    launchTaskId && launchInstanceId === instance.id && !instanceRunning,
+                  )
+                  return (
+                    <InstanceCard
+                      key={instance.id}
+                      instance={instance}
+                      onLaunch={launchInstance}
+                      isLaunching={instanceLaunching}
+                      isRunning={instanceRunning}
+                    />
+                  )
+                })}
               </div>
             )}
           </section>

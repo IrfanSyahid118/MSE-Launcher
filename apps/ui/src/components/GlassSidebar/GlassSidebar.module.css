@@ -101,7 +101,7 @@
   justify-content: center;
   width: 26px;
   height: 26px;
-  border-radius: 50%;
+  border-radius: 6px;
   background: var(--surface-elevated);
   color: var(--text-secondary);
   font-size: 10px;
@@ -110,8 +110,7 @@
 }
 
 .avatarFilled {
-  color: var(--text-primary);
-  background: linear-gradient(140deg, #4c4a63, #2f3140);
+  background: transparent;
 }
 
 .livePulse {

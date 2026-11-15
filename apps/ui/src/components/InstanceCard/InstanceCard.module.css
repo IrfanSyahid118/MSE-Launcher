@@ -107,6 +107,10 @@
   cursor: not-allowed;
 }
 
+.runningButton:disabled {
+  opacity: 0.85;
+}
+
 .iconButton {
   display: inline-flex;
   align-items: center;

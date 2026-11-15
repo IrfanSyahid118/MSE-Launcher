@@ -95,7 +95,10 @@ export interface IpcInvokeMap {
   }
   'launch:kill': { req: { instanceId: string }; res: void }
   'auth:beginMicrosoft': { req: void; res: DeviceCodeInfo }
-  'auth:completeMicrosoft': { req: DeviceCodeInfo; res: Account }
+  'auth:completeMicrosoft': {
+    req: DeviceCodeInfo & { taskId?: string | undefined }
+    res: Account
+  }
   'auth:signOut': { req: { accountId: string }; res: void }
   'java:detect': { req: void; res: JavaInstallation[] }
   'java:validate': { req: { path: string }; res: JavaInstallation }

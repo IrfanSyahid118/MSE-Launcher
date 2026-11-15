@@ -50,7 +50,7 @@ export function ContentCard({ item, onInstall, installLabel }: ContentCardProps)
           <h3 className={styles.title} title={item.title}>
             {item.title}
           </h3>
-          <span className={styles.author}>by {item.slug}</span>
+          <span className={styles.author}>{t('browse.byAuthor', { author: item.slug })}</span>
         </div>
 
         <p className={styles.description}>{item.description}</p>

@@ -305,6 +305,20 @@
   color: var(--text-primary);
 }
 
+.iconEditorRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.iconEditorActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .deleteArea {
   display: flex;
   align-items: center;

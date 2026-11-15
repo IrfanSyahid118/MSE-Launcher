@@ -27,6 +27,33 @@ pub fn run() {
         .setup(|app| {
             let state = app.state::<AppState>();
             state.logs.attach_app_handle(app.handle().clone());
+            match state.instances.cleanup_incomplete_modpacks() {
+                Ok(0) => {}
+                Ok(count) => tracing::info!(
+                    "Membersihkan {} instance modpack yang terputus pada sesi sebelumnya",
+                    count
+                ),
+                Err(err) => tracing::warn!(
+                    "Gagal memeriksa instance modpack tidak selesai saat startup: {}",
+                    err.message
+                ),
+            }
+            let scope = app.asset_protocol_scope();
+            let skins_dir = state.paths.root.join("skins");
+            if let Err(err) = scope.allow_directory(&skins_dir, true) {
+                tracing::warn!(
+                    "Gagal mendaftarkan scope assetProtocol untuk skins ({}): {}",
+                    skins_dir.display(),
+                    err
+                );
+            }
+            if let Err(err) = scope.allow_directory(&state.paths.instances_dir, true) {
+                tracing::warn!(
+                    "Gagal mendaftarkan scope assetProtocol untuk instances ({}): {}",
+                    state.paths.instances_dir.display(),
+                    err
+                );
+            }
             Ok(())
         })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -53,8 +80,8 @@ pub fn run() {
             commands::accounts_update_skin,
             commands::accounts_sync_minecraft,
             commands::accounts_set_active_cape,
-            commands::accounts_install_skin_resourcepack,
-            commands::accounts_export_skin_resourcepack,
+            commands::accounts_install_skin_resource_pack,
+            commands::accounts_export_skin_resource_pack,
             commands::auth_create_offline,
             commands::auth_begin_microsoft,
             commands::auth_complete_microsoft,

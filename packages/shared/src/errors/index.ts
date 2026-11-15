@@ -2,14 +2,17 @@ export type ErrorCode =
   | 'NETWORK'
   | 'RATE_LIMITED'
   | 'NOT_FOUND'
+  | 'ALREADY_EXISTS'
   | 'HASH_MISMATCH'
   | 'DISK_FULL'
+  | 'FILE_SYSTEM'
   | 'JAVA_MISSING'
   | 'AUTH_FAILED'
   | 'AUTH_EXPIRED'
   | 'PROVIDER_NOT_CONFIGURED'
   | 'DISTRIBUTION_BLOCKED'
   | 'INVALID_INPUT'
+  | 'LAUNCH_FAILED'
   | 'CANCELLED'
   | 'INTERNAL'
 
@@ -25,14 +28,17 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   NETWORK: 'Koneksi ke server gagal. Periksa jaringan lalu coba lagi.',
   RATE_LIMITED: 'Terlalu banyak permintaan ke server. Coba lagi beberapa saat.',
   NOT_FOUND: 'Data yang diminta tidak ditemukan.',
+  ALREADY_EXISTS: 'Data dengan identitas tersebut sudah ada.',
   HASH_MISMATCH: 'File yang diunduh rusak. Coba unduh ulang.',
   DISK_FULL: 'Ruang penyimpanan tidak cukup.',
+  FILE_SYSTEM: 'Operasi berkas gagal. Periksa izin dan direktori.',
   JAVA_MISSING: 'Java yang dibutuhkan tidak ditemukan.',
   AUTH_FAILED: 'Autentikasi gagal. Coba masuk kembali.',
   AUTH_EXPIRED: 'Sesi akun sudah kedaluwarsa. Masuk kembali.',
   PROVIDER_NOT_CONFIGURED: 'Layanan ini belum dikonfigurasi.',
   DISTRIBUTION_BLOCKED: 'Pembuat konten melarang unduhan pihak ketiga.',
   INVALID_INPUT: 'Data yang dikirim tidak valid.',
+  LAUNCH_FAILED: 'Gagal meluncurkan proses game.',
   CANCELLED: 'Operasi dibatalkan.',
   INTERNAL: 'Terjadi kesalahan internal. Lihat log launcher.',
 }

@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react'
 import type { ReactNode } from 'react'
+import { useI18n } from '../../i18n'
 import { ErrorBoundary } from '../ErrorBoundary/ErrorBoundary'
 import { SkinFallback } from './SkinFallback'
 
@@ -37,8 +38,9 @@ export function MinecraftSkin3D({
   zoom,
   viewBack,
 }: MinecraftSkin3DProps): ReactNode {
+  const { t } = useI18n()
   return (
-    <ErrorBoundary fallback={<SkinFallback skinUrl={skinUrl} isSlim={isSlim} label="2D Minecraft player skin preview" />}>
+    <ErrorBoundary fallback={<SkinFallback skinUrl={skinUrl} isSlim={isSlim} label={t('skin.preview2dLabel')} />}>
       <Suspense fallback={<div className={className} aria-hidden />}>
         <MinecraftSkinViewer3D
           skinUrl={skinUrl}

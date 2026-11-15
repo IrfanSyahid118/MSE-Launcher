@@ -63,34 +63,38 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Lau
     Ok(())
 }
 
-/// Mengarantina berkas yang korup/tidak valid dengan me-rename menjadi `*.corrupt-<timestamp>`.
-pub fn quarantine_corrupt_file(path: &Path) -> Option<PathBuf> {
-    if !path.exists() {
-        return None;
+/// Mengarantina berkas yang korup/tidak valid dengan me-rename menjadi `*.corrupt-<timestamp>-<nonce>`.
+pub fn quarantine_corrupt_file(path: &Path) -> Result<Option<PathBuf>, LauncherErrorPayload> {
+    if fs::symlink_metadata(path).is_err() {
+        return Ok(None);
     }
 
-    let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%S%9fZ").to_string();
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let corrupt_name = format!("{}.corrupt-{}", file_name, timestamp);
+    let corrupt_name = format!("{}.corrupt-{}-{}", file_name, timestamp, &nonce[..8]);
     let corrupt_path = path.with_file_name(corrupt_name);
 
-    if fs::rename(path, &corrupt_path).is_ok() {
-        tracing::warn!(
-            "Berkas korup {:?} telah dikarantina ke {:?}",
-            path,
-            corrupt_path
-        );
-        Some(corrupt_path)
-    } else {
-        None
-    }
+    fs::rename(path, &corrupt_path).map_err(|e| {
+        LauncherErrorPayload::file_system(format!(
+            "Gagal mengkarantina berkas korup {:?} ke {:?}: {}",
+            path, corrupt_path, e
+        ))
+    })?;
+    tracing::warn!(
+        "Berkas korup {:?} telah dikarantina ke {:?}",
+        path,
+        corrupt_path
+    );
+    Ok(Some(corrupt_path))
 }
 
 /// Membaca file JSON.
 /// Jika file tidak ada -> Ok(None).
-/// Jika file rusak/gagal parse -> karantina file ke `*.corrupt-*`, catat warning, dan kembalikan Ok(None).
+/// Jika file rusak/gagal parse -> karantina file ke `*.corrupt-*` lalu kembalikan Ok(None);
+/// jika pembacaan atau karantina gagal -> kembalikan Err agar pemanggil menolak silent overwrite.
 pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, LauncherErrorPayload> {
-    if !path.exists() {
+    if fs::symlink_metadata(path).is_err() {
         return Ok(None);
     }
 
@@ -112,7 +116,7 @@ pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Lau
                 path,
                 e
             );
-            quarantine_corrupt_file(path);
+            quarantine_corrupt_file(path)?;
             Ok(None)
         }
     }

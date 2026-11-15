@@ -30,9 +30,9 @@ pub fn instances_create(
 #[tauri::command]
 pub fn instances_update(
     state: tauri::State<AppState>,
-    instance: Instance,
+    req: Instance,
 ) -> Result<(), LauncherErrorPayload> {
-    state.instances.update(instance)
+    state.instances.update(req)
 }
 
 #[tauri::command]

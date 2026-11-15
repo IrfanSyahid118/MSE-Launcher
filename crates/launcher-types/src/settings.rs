@@ -141,6 +141,15 @@ impl Default for Settings {
     }
 }
 
+// Distinguish omitted JSON fields (None) from explicit null (Some(None)) so patches can clear values.
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeSettingsPatch {
@@ -160,6 +169,7 @@ pub struct MemorySettingsPatch {
 #[serde(rename_all = "camelCase")]
 pub struct JavaSettingsPatch {
     pub prefer_managed: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub custom_path: Option<Option<String>>,
     pub jvm_preset: Option<JvmPreset>,
     pub custom_jvm_args: Option<String>,
@@ -177,6 +187,7 @@ pub struct DiscordSettingsPatch {
     pub enabled: Option<bool>,
     pub show_idle: Option<bool>,
     pub show_playing: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub custom_client_id: Option<Option<String>>,
 }
 
@@ -189,5 +200,6 @@ pub struct SettingsPatch {
     pub downloads: Option<DownloadSettingsPatch>,
     pub discord: Option<DiscordSettingsPatch>,
     pub language: Option<Language>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub active_account_id: Option<Option<String>>,
 }

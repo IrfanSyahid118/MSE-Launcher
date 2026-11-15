@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-archive"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "dunce",
  "launcher-security",
@@ -1990,12 +1990,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "uuid 1.29.1",
  "zip",
 ]
 
 [[package]]
 name = "launcher-auth"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "launcher-net",
@@ -2003,6 +2004,7 @@ dependencies = [
  "launcher-security",
  "launcher-storage",
  "launcher-types",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -2010,11 +2012,12 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid 1.29.1",
+ "zeroize",
 ]
 
 [[package]]
 name = "launcher-content"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "dunce",
  "futures-util",
@@ -2025,6 +2028,7 @@ dependencies = [
  "launcher-security",
  "launcher-storage",
  "launcher-types",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -2038,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-discord"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "discord-rich-presence",
  "launcher-types",
@@ -2050,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-download"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2070,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-java"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "dunce",
  "launcher-download",
@@ -2090,7 +2094,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-launch"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "dunce",
@@ -2099,6 +2103,7 @@ dependencies = [
  "launcher-download",
  "launcher-java",
  "launcher-loader",
+ "launcher-net",
  "launcher-platform",
  "launcher-security",
  "launcher-storage",
@@ -2116,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-loader"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "hex",
  "launcher-net",
@@ -2138,7 +2143,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-net"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "fastrand",
  "launcher-types",
@@ -2152,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-platform"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "dunce",
@@ -2176,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-security"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "dunce",
  "launcher-types",
@@ -2187,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-servers"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "fastrand",
@@ -2202,11 +2207,12 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "windows",
 ]
 
 [[package]]
 name = "launcher-storage"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "dunce",
@@ -2220,37 +2226,43 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
  "uuid 1.29.1",
 ]
 
 [[package]]
 name = "launcher-types"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "uuid 1.29.1",
+ "zeroize",
 ]
 
 [[package]]
 name = "launcher-version"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "chrono",
+ "hex",
  "launcher-download",
  "launcher-net",
  "launcher-platform",
  "launcher-security",
  "launcher-storage",
  "launcher-types",
+ "regex",
  "serde",
  "serde_json",
+ "sha1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid 1.29.1",
 ]
 
 [[package]]
@@ -2403,7 +2415,7 @@ checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
 name = "minecraft-launcher-desktop"
-version = "1.0.0-beta"
+version = "1.0.0"
 dependencies = [
  "launcher-archive",
  "launcher-auth",
@@ -2420,6 +2432,7 @@ dependencies = [
  "launcher-storage",
  "launcher-types",
  "launcher-version",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",

@@ -110,8 +110,12 @@ struct ParsedVersion {
 }
 
 fn parse_semver(raw: &str) -> Option<ParsedVersion> {
-    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
-    let (core, pre) = match trimmed.split_once('-') {
+    let without_build = raw
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('+')
+        .next()?;
+    let (core, pre) = match without_build.split_once('-') {
         Some((c, p)) => {
             let p = p.trim();
             (
@@ -123,7 +127,7 @@ fn parse_semver(raw: &str) -> Option<ParsedVersion> {
                 },
             )
         }
-        None => (trimmed, None),
+        None => (without_build, None),
     };
     let mut parts = core.split('.');
     let major = parts.next()?.parse::<u64>().ok()?;
@@ -135,6 +139,30 @@ fn parse_semver(raw: &str) -> Option<ParsedVersion> {
         patch,
         prerelease: pre,
     })
+}
+
+fn compare_prerelease(left: &str, right: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut left_parts = left.split('.');
+    let mut right_parts = right.split('.');
+    loop {
+        match (left_parts.next(), right_parts.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a), Some(b)) => {
+                let ord = match (a.parse::<u64>(), b.parse::<u64>()) {
+                    (Ok(na), Ok(nb)) => na.cmp(&nb),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => a.cmp(b),
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
 }
 
 pub fn is_newer_version(current: &str, latest: &str) -> bool {
@@ -149,7 +177,7 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
     match (curr.prerelease, cand.prerelease) {
         (Some(_), None) => true,
         (None, Some(_)) => false,
-        (Some(c_pre), Some(l_pre)) => l_pre > c_pre,
+        (Some(c_pre), Some(l_pre)) => compare_prerelease(&l_pre, &c_pre).is_gt(),
         (None, None) => false,
     }
 }
@@ -212,22 +240,11 @@ fn select_github_asset(assets: &[GitHubAsset], mode: InstallMode) -> Option<&Git
     }
 }
 
-async fn try_fetch_latest_manifest(
-    http: &HttpClient,
+fn parse_manifest_result(
+    manifest: LatestManifest,
     current_version: &str,
     install_mode: InstallMode,
 ) -> Option<UpdateCheckResult> {
-    let resp = http
-        .client()
-        .get(LATEST_MANIFEST_URL)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let manifest: LatestManifest = resp.json().await.ok()?;
     let platform = manifest.platforms.as_ref()?.get("windows-x86_64")?;
     let asset = match install_mode {
         InstallMode::Portable => platform.portable.as_ref(),
@@ -270,6 +287,221 @@ async fn try_fetch_latest_manifest(
     })
 }
 
+async fn try_fetch_manifest_from_url(
+    http: &HttpClient,
+    manifest_url: &str,
+    current_version: &str,
+    install_mode: InstallMode,
+) -> Option<UpdateCheckResult> {
+    let resp = http
+        .request(reqwest::Method::GET, manifest_url)
+        .ok()?
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let manifest: LatestManifest = resp.json().await.ok()?;
+    parse_manifest_result(manifest, current_version, install_mode)
+}
+
+async fn try_fetch_latest_manifest(
+    http: &HttpClient,
+    current_version: &str,
+    install_mode: InstallMode,
+) -> Option<UpdateCheckResult> {
+    try_fetch_manifest_from_url(http, LATEST_MANIFEST_URL, current_version, install_mode).await
+}
+
+fn select_release(releases: &[GitHubRelease]) -> Option<&GitHubRelease> {
+    let non_draft: Vec<&GitHubRelease> = releases.iter().filter(|r| !r.draft).collect();
+    non_draft
+        .iter()
+        .copied()
+        .find(|r| !r.prerelease)
+        .or_else(|| non_draft.first().copied())
+}
+
+fn parse_sha256_from_checksum_text(text: &str, asset_name: &str) -> Option<String> {
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // BSD format: `SHA256 (filename) = <64-hex>`
+        if let Some(rest) = line
+            .strip_prefix("SHA256 (")
+            .or_else(|| line.strip_prefix("sha256 ("))
+        {
+            if let Some((name, hash_part)) = rest.split_once(") = ") {
+                let candidate = hash_part.trim().to_ascii_lowercase();
+                if name.trim().eq_ignore_ascii_case(asset_name)
+                    && is_valid_sha256_hex(Some(candidate.as_str()))
+                {
+                    return Some(candidate);
+                }
+            }
+            continue;
+        }
+        // Single-hash file content (exact 64-hex line)
+        let lower_line = line.to_ascii_lowercase();
+        if is_valid_sha256_hex(Some(lower_line.as_str())) {
+            return Some(lower_line);
+        }
+        // GNU sha256sum format: `<64-hex> [* ]<filename>`
+        let mut parts = line.split_whitespace();
+        if let (Some(hash_tok), Some(file_tok)) = (parts.next(), parts.next()) {
+            let clean_hash = hash_tok.trim().to_ascii_lowercase();
+            let clean_file = file_tok
+                .trim_start_matches('*')
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(file_tok);
+            if clean_file.eq_ignore_ascii_case(asset_name)
+                && is_valid_sha256_hex(Some(clean_hash.as_str()))
+            {
+                return Some(clean_hash);
+            }
+        }
+    }
+    None
+}
+
+async fn try_fetch_companion_sha256(
+    http: &HttpClient,
+    release: &GitHubRelease,
+    asset_name: &str,
+) -> Option<String> {
+    let direct_candidates = [
+        format!("{asset_name}.sha256"),
+        format!("{asset_name}.sha256sum"),
+    ];
+    let aggregate_candidates = ["sha256sums", "sha256sums.txt", "checksums.txt"];
+
+    let checksum_asset = release
+        .assets
+        .iter()
+        .find(|a| {
+            direct_candidates
+                .iter()
+                .any(|cand| a.name.eq_ignore_ascii_case(cand))
+        })
+        .or_else(|| {
+            release.assets.iter().find(|a| {
+                aggregate_candidates
+                    .iter()
+                    .any(|cand| a.name.eq_ignore_ascii_case(cand))
+            })
+        })?;
+
+    if checksum_asset.size.unwrap_or(0) > 64 * 1024 {
+        return None;
+    }
+    validate_update_url(&checksum_asset.browser_download_url).ok()?;
+    let resp = http
+        .request(reqwest::Method::GET, &checksum_asset.browser_download_url)
+        .ok()?
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = resp.text().await.ok()?;
+    if body.len() > 64 * 1024 {
+        return None;
+    }
+    parse_sha256_from_checksum_text(&body, asset_name)
+}
+
+async fn build_release_fallback_result(
+    http: &HttpClient,
+    release: &GitHubRelease,
+    current_version: &str,
+    install_mode: InstallMode,
+) -> UpdateCheckResult {
+    let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
+    let asset = select_github_asset(&release.assets, install_mode).filter(|&a| {
+        validate_update_url(&a.browser_download_url).is_ok()
+            && validate_asset_filename(&a.name).is_ok()
+    });
+    let download_url = asset.map(|a| a.browser_download_url.clone());
+    let sha256 = match asset {
+        Some(a) => try_fetch_companion_sha256(http, release, &a.name).await,
+        None => None,
+    };
+    let update_available =
+        is_newer_version(current_version, &latest_version) && download_url.is_some();
+
+    UpdateCheckResult {
+        current_version: current_version.to_string(),
+        latest_version,
+        update_available,
+        install_mode,
+        asset_name: asset.map(|a| a.name.clone()),
+        download_url,
+        size_bytes: asset.and_then(|a| a.size),
+        sha256,
+        release_notes: release.body.clone(),
+    }
+}
+
+async fn try_fetch_release_manifest_asset(
+    http: &HttpClient,
+    release: &GitHubRelease,
+    current_version: &str,
+    install_mode: InstallMode,
+) -> Option<UpdateCheckResult> {
+    let manifest_asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.eq_ignore_ascii_case("latest.json"))?;
+    validate_update_url(&manifest_asset.browser_download_url).ok()?;
+    try_fetch_manifest_from_url(
+        http,
+        &manifest_asset.browser_download_url,
+        current_version,
+        install_mode,
+    )
+    .await
+}
+
+async fn try_fetch_any_verified_manifest(
+    http: &HttpClient,
+    current_version: &str,
+    install_mode: InstallMode,
+) -> Option<UpdateCheckResult> {
+    if let Some(latest) = try_fetch_latest_manifest(http, current_version, install_mode).await {
+        return Some(latest);
+    }
+    let resp = http
+        .request(reqwest::Method::GET, RELEASES_API_URL)
+        .ok()?
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let releases: Vec<GitHubRelease> = resp.json().await.ok()?;
+    let release = select_release(&releases)?;
+    if let Some(manifest) =
+        try_fetch_release_manifest_asset(http, release, current_version, install_mode).await
+    {
+        return Some(manifest);
+    }
+    let fallback =
+        build_release_fallback_result(http, release, current_version, install_mode).await;
+    fallback
+        .sha256
+        .as_deref()
+        .filter(|s| is_valid_sha256_hex(Some(*s)))?;
+    Some(fallback)
+}
+
 #[tauri::command]
 pub async fn updater_check(
     state: tauri::State<'_, AppState>,
@@ -288,8 +520,7 @@ pub async fn updater_check(
     *state.verified_update.write().await = None;
 
     let resp = http
-        .client()
-        .get(RELEASES_API_URL)
+        .request(reqwest::Method::GET, RELEASES_API_URL)?
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -322,14 +553,7 @@ pub async fn updater_check(
         LauncherErrorPayload::network(format!("Gagal membaca respons rilis GitHub: {e}"))
     })?;
 
-    let non_draft: Vec<&GitHubRelease> = releases.iter().filter(|r| !r.draft).collect();
-    let selected = non_draft
-        .iter()
-        .copied()
-        .find(|r| !r.prerelease)
-        .or_else(|| non_draft.first().copied());
-
-    let Some(release) = selected else {
+    let Some(release) = select_release(&releases) else {
         return Ok(UpdateCheckResult {
             current_version: current_version.clone(),
             latest_version: current_version,
@@ -343,27 +567,22 @@ pub async fn updater_check(
         });
     };
 
-    let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
-    let asset = select_github_asset(&release.assets, install_mode).filter(|&a| {
-        validate_update_url(&a.browser_download_url).is_ok()
-            && validate_asset_filename(&a.name).is_ok()
-    });
+    if let Some(mut manifest_res) =
+        try_fetch_release_manifest_asset(&http, release, &current_version, install_mode).await
+    {
+        if manifest_res.release_notes.is_none() {
+            manifest_res.release_notes = release.body.clone();
+        }
+        *state.verified_update.write().await = Some(manifest_res.clone());
+        return Ok(manifest_res);
+    }
 
-    let download_url = asset.map(|a| a.browser_download_url.clone());
-    let update_available =
-        is_newer_version(&current_version, &latest_version) && download_url.is_some();
-
-    Ok(UpdateCheckResult {
-        current_version,
-        latest_version,
-        update_available,
-        install_mode,
-        asset_name: asset.map(|a| a.name.clone()),
-        download_url,
-        size_bytes: asset.and_then(|a| a.size),
-        sha256: None,
-        release_notes: release.body.clone(),
-    })
+    let result =
+        build_release_fallback_result(&http, release, &current_version, install_mode).await;
+    if result.sha256.is_some() {
+        *state.verified_update.write().await = Some(result.clone());
+    }
+    Ok(result)
 }
 
 fn portable_staging_destination(
@@ -431,13 +650,38 @@ fn apply_downloaded_update(
         InstallMode::Portable => {
             if can_replace_in_place {
                 if let Some(target_exe) = current_exe {
-                    let mut cmd = std::process::Command::new("cmd.exe");
-                    cmd.env("MSE_UPDATE_SRC", destination)
+                    let pid = std::process::id().to_string();
+                    let script = r#"
+$pidVal = [int]$env:MSE_UPDATE_PID
+for ($i = 0; $i -lt 80; $i++) {
+    if (-not (Get-Process -Id $pidVal -ErrorAction SilentlyContinue)) { break }
+    Start-Sleep -Milliseconds 250
+}
+for ($i = 0; $i -lt 10; $i++) {
+    try {
+        Move-Item -LiteralPath $env:MSE_UPDATE_SRC -Destination $env:MSE_UPDATE_DST -Force
+        break
+    } catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+if (Test-Path -LiteralPath $env:MSE_UPDATE_DST) {
+    Start-Process -FilePath $env:MSE_UPDATE_DST
+}
+"#;
+                    let mut cmd = std::process::Command::new("powershell.exe");
+                    cmd.env("MSE_UPDATE_PID", pid)
+                        .env("MSE_UPDATE_SRC", destination)
                         .env("MSE_UPDATE_DST", target_exe)
                         .creation_flags(CREATE_NO_WINDOW)
-                        .raw_arg(
-                            r#"/C ping 127.0.0.1 -n 3 > nul && (move /Y "%MSE_UPDATE_SRC%" "%MSE_UPDATE_DST%" > nul 2>&1 || (ping 127.0.0.1 -n 3 > nul && move /Y "%MSE_UPDATE_SRC%" "%MSE_UPDATE_DST%" > nul)) && start "" "%MSE_UPDATE_DST%""#,
-                        );
+                        .args([
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-Command",
+                            script,
+                        ]);
                     cmd.spawn().map_err(|e| {
                         LauncherErrorPayload::new(
                             ErrorCode::LaunchFailed,
@@ -506,7 +750,7 @@ pub async fn updater_install(
         }
         _ => {
             let http = HttpClient::new();
-            let fresh = try_fetch_latest_manifest(&http, current_version, install_mode)
+            let fresh = try_fetch_any_verified_manifest(&http, current_version, install_mode)
                 .await
                 .ok_or_else(|| {
                     LauncherErrorPayload::network(
@@ -712,10 +956,61 @@ mod tests {
         assert!(is_newer_version("1.0.0", "1.1.0"));
         assert!(is_newer_version("1.0.0-beta", "1.0.0"));
         assert!(is_newer_version("1.0.0-beta", "1.1.0"));
+        assert!(is_newer_version("1.0.0-beta.2", "1.0.0-beta.10"));
+        assert!(is_newer_version("1.0.0+build1", "1.0.1"));
+        assert!(!is_newer_version("1.0.0-beta.10", "1.0.0-beta.2"));
         assert!(!is_newer_version("1.1.0", "1.1.0"));
         assert!(!is_newer_version("1.1.0", "1.0.0-beta"));
         assert!(!is_newer_version("1.2.0", "v1.1.9"));
         assert!(is_newer_version("v1.0.0", "v1.1.0"));
+    }
+
+    #[test]
+    fn test_select_release_and_parse_prerelease_manifest() {
+        let prerelease = GitHubRelease {
+            tag_name: "v1.1.0-beta".to_string(),
+            draft: false,
+            prerelease: true,
+            body: Some("Beta notes".to_string()),
+            assets: vec![GitHubAsset {
+                name: "latest.json".to_string(),
+                browser_download_url:
+                    "https://github.com/IrfanSyahid118/MSE-Launcher/releases/download/v1.1.0-beta/latest.json"
+                        .to_string(),
+                size: Some(400),
+            }],
+        };
+        let draft = GitHubRelease {
+            tag_name: "v1.2.0".to_string(),
+            draft: true,
+            prerelease: false,
+            body: None,
+            assets: vec![],
+        };
+        let list = [draft, prerelease];
+        let picked = select_release(&list).expect("should fall back to prerelease when no stable");
+        assert_eq!(picked.tag_name, "v1.1.0-beta");
+
+        let manifest = LatestManifest {
+            version: "1.1.0-beta".to_string(),
+            notes: None,
+            platforms: Some(std::collections::HashMap::from([(
+                "windows-x86_64".to_string(),
+                PlatformManifest {
+                    installer: Some(ManifestAsset {
+                        name: "MSE.Launcher_1.1.0-beta_x64-setup.exe".to_string(),
+                        url: "https://github.com/IrfanSyahid118/MSE-Launcher/releases/download/v1.1.0-beta/MSE.Launcher_1.1.0-beta_x64-setup.exe".to_string(),
+                        sha256: Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string()),
+                        size: Some(12345),
+                    }),
+                    portable: None,
+                },
+            )])),
+        };
+        let parsed = parse_manifest_result(manifest, "1.0.0-beta", InstallMode::Installer)
+            .expect("manifest should parse");
+        assert!(parsed.update_available);
+        assert!(parsed.sha256.is_some());
     }
 
     #[test]
@@ -750,5 +1045,28 @@ mod tests {
         assert!(!is_valid_sha256_hex(Some(
             "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
         )));
+    }
+
+    #[test]
+    fn test_h6_parse_companion_checksum_formats() {
+        let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let asset = "MSE.Launcher_1.1.0_Portable.exe";
+        assert_eq!(
+            parse_sha256_from_checksum_text(hash, asset).as_deref(),
+            Some(hash)
+        );
+        let sums = format!(
+            "0000000000000000000000000000000000000000000000000000000000000000  other.exe\n{hash} *{asset}\n"
+        );
+        assert_eq!(
+            parse_sha256_from_checksum_text(&sums, asset).as_deref(),
+            Some(hash)
+        );
+        let bsd = format!("SHA256 ({asset}) = {hash}\n");
+        assert_eq!(
+            parse_sha256_from_checksum_text(&bsd, asset).as_deref(),
+            Some(hash)
+        );
+        assert!(parse_sha256_from_checksum_text("invalid-checksum", asset).is_none());
     }
 }

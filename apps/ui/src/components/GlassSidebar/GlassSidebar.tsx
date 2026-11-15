@@ -15,6 +15,7 @@ import {
 import { useI18n } from '../../i18n'
 import { useActiveAccount } from '../../api/queries'
 import { useAppStore } from '../../stores/app-store'
+import { PlayerHeadAvatar } from '../MinecraftSkin/PlayerHeadAvatar'
 import styles from './GlassSidebar.module.css'
 
 const CreateInstanceDialog = lazy(() =>
@@ -75,15 +76,15 @@ export function GlassSidebar(): ReactNode {
           )}
         </RailLink>
 
-        <RailLink to="/browse" label="Discover" testId="nav-browse">
+        <RailLink to="/browse" label={t('nav.browse')} testId="nav-browse">
           {(isActive) => <Compass size={19} strokeWidth={isActive ? 2.2 : 1.9} aria-hidden />}
         </RailLink>
 
-        <RailLink to="/skins" label="Skins" testId="nav-skins">
+        <RailLink to="/skins" label={t('nav.skins')} testId="nav-skins">
           {(isActive) => <Shirt size={19} strokeWidth={isActive ? 2.2 : 1.9} aria-hidden />}
         </RailLink>
 
-        <RailLink to="/screenshots" label="Screenshots" testId="nav-screenshots">
+        <RailLink to="/screenshots" label={t('nav.screenshots')} testId="nav-screenshots">
           {(isActive) => <Images size={19} strokeWidth={isActive ? 2.2 : 1.9} aria-hidden />}
         </RailLink>
 
@@ -105,19 +106,28 @@ export function GlassSidebar(): ReactNode {
 
       <div className={styles.group}>
         <RailLink to="/accounts" label={t('nav.manageAccounts')} testId="nav-accounts">
-          {() => (
-            <span className={`${styles.avatar} ${account ? styles.avatarFilled : ''}`} aria-hidden>
-              {account ? account.username.slice(0, 2).toUpperCase() : '?'}
-            </span>
-          )}
+          {() =>
+            account ? (
+              <PlayerHeadAvatar
+                account={account}
+                isActiveAccount
+                size={26}
+                className={`${styles.avatar} ${styles.avatarFilled}`}
+              />
+            ) : (
+              <span className={styles.avatar} aria-hidden>
+                ?
+              </span>
+            )
+          }
         </RailLink>
 
         <button
           type="button"
           className={styles.railItem}
           onClick={() => setCreateDialogOpen(true)}
-          aria-label="New instance"
-          title="New instance"
+          aria-label={t('home.newInstance')}
+          title={t('home.newInstance')}
         >
           <Plus size={19} strokeWidth={2.1} aria-hidden />
         </button>

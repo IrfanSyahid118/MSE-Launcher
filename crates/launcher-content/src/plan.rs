@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use launcher_net::HttpClient;
 use launcher_types::{
     ContentFilter, ContentInstallPlan, ContentPlanEntry, ContentProviderId, ContentType, Instance,
@@ -78,55 +80,28 @@ pub(crate) async fn build_install_plan_with_bases(
             );
             let target_version = mr_to_version(&target_detail)?;
             let downloadable = target_version.download_url.is_some();
+            let mut seen_projects = HashSet::from([target_version.project_id.clone()]);
 
             for dep in &target_detail.dependencies {
                 if dep.dependency_type == "required" {
                     if let Some(ref dep_ver_id) = dep.version_id {
-                        if let Ok(dep_detail) =
-                            get_modrinth_version_with_base(http, modrinth_base, dep_ver_id).await
+                        match get_modrinth_version_with_base(http, modrinth_base, dep_ver_id).await
                         {
-                            if let Ok(dep_ver) = mr_to_version(&dep_detail) {
-                                let dep_type = get_modrinth_project_with_base(
-                                    http,
-                                    modrinth_base,
-                                    &dep_ver.project_id,
-                                )
-                                .await
-                                .map(|p| {
-                                    resolve_modrinth_version_type(
-                                        p.summary.content_type,
-                                        &dep_detail.loaders,
-                                    )
-                                })
-                                .unwrap_or(ContentType::Mod);
-                                dependencies.push(ContentPlanEntry {
-                                    downloadable: dep_ver.download_url.is_some(),
-                                    content_type: dep_type,
-                                    version: dep_ver,
-                                });
-                            }
-                        }
-                    } else if let Some(ref dep_proj_id) = dep.project_id {
-                        if let Ok(dep_versions) = list_modrinth_versions_with_base(
-                            http,
-                            modrinth_base,
-                            dep_proj_id,
-                            &filter,
-                        )
-                        .await
-                        {
-                            if let Some(best) = dep_versions.first() {
-                                if let Ok(dep_ver) = mr_to_version(best) {
+                            Ok(dep_detail) => match mr_to_version(&dep_detail) {
+                                Ok(dep_ver) => {
+                                    if !seen_projects.insert(dep_ver.project_id.clone()) {
+                                        continue;
+                                    }
                                     let dep_type = get_modrinth_project_with_base(
                                         http,
                                         modrinth_base,
-                                        dep_proj_id,
+                                        &dep_ver.project_id,
                                     )
                                     .await
                                     .map(|p| {
                                         resolve_modrinth_version_type(
                                             p.summary.content_type,
-                                            &best.loaders,
+                                            &dep_detail.loaders,
                                         )
                                     })
                                     .unwrap_or(ContentType::Mod);
@@ -136,7 +111,67 @@ pub(crate) async fn build_install_plan_with_bases(
                                         version: dep_ver,
                                     });
                                 }
+                                Err(e) => warnings.push(format!(
+                                    "Dependensi wajib '{}' gagal diproses: {}",
+                                    dep_ver_id, e.message
+                                )),
+                            },
+                            Err(e) => warnings.push(format!(
+                                "Dependensi wajib '{}' gagal diambil: {}",
+                                dep_ver_id, e.message
+                            )),
+                        }
+                    } else if let Some(ref dep_proj_id) = dep.project_id {
+                        if !seen_projects.insert(dep_proj_id.clone()) {
+                            continue;
+                        }
+                        match list_modrinth_versions_with_base(
+                            http,
+                            modrinth_base,
+                            dep_proj_id,
+                            &filter,
+                        )
+                        .await
+                        {
+                            Ok(dep_versions) => {
+                                if let Some(best) = dep_versions.first() {
+                                    match mr_to_version(best) {
+                                        Ok(dep_ver) => {
+                                            let dep_type = get_modrinth_project_with_base(
+                                                http,
+                                                modrinth_base,
+                                                dep_proj_id,
+                                            )
+                                            .await
+                                            .map(|p| {
+                                                resolve_modrinth_version_type(
+                                                    p.summary.content_type,
+                                                    &best.loaders,
+                                                )
+                                            })
+                                            .unwrap_or(ContentType::Mod);
+                                            dependencies.push(ContentPlanEntry {
+                                                downloadable: dep_ver.download_url.is_some(),
+                                                content_type: dep_type,
+                                                version: dep_ver,
+                                            });
+                                        }
+                                        Err(e) => warnings.push(format!(
+                                            "Versi dependensi wajib '{}' gagal diproses: {}",
+                                            dep_proj_id, e.message
+                                        )),
+                                    }
+                                } else {
+                                    warnings.push(format!(
+                                        "Dependensi wajib '{}' tidak memiliki versi yang kompatibel.",
+                                        dep_proj_id
+                                    ));
+                                }
                             }
+                            Err(e) => warnings.push(format!(
+                                "Dependensi wajib '{}' gagal diambil: {}",
+                                dep_proj_id, e.message
+                            )),
                         }
                     }
                 } else if dep.dependency_type == "incompatible" {
@@ -189,10 +224,14 @@ pub(crate) async fn build_install_plan_with_bases(
             .await?;
             let target_version = cf_to_version(&target_file);
             let downloadable = target_version.download_url.is_some();
+            let mut seen_mod_ids = HashSet::from([mod_id]);
 
             for dep in &target_file.dependencies {
                 if dep.relation_type == 3 {
-                    if let Ok(files) = list_curseforge_versions_with_base(
+                    if !seen_mod_ids.insert(dep.mod_id) {
+                        continue;
+                    }
+                    match list_curseforge_versions_with_base(
                         http,
                         curseforge_base,
                         cf_api_key,
@@ -201,22 +240,33 @@ pub(crate) async fn build_install_plan_with_bases(
                     )
                     .await
                     {
-                        if let Some(best) = files.first() {
-                            let dep_ver = cf_to_version(best);
-                            let dep_type = get_curseforge_content_type_with_base(
-                                http,
-                                curseforge_base,
-                                cf_api_key,
-                                &dep.mod_id.to_string(),
-                            )
-                            .await
-                            .unwrap_or(ContentType::Mod);
-                            dependencies.push(ContentPlanEntry {
-                                downloadable: dep_ver.download_url.is_some(),
-                                content_type: dep_type,
-                                version: dep_ver,
-                            });
+                        Ok(files) => {
+                            if let Some(best) = files.first() {
+                                let dep_ver = cf_to_version(best);
+                                let dep_type = get_curseforge_content_type_with_base(
+                                    http,
+                                    curseforge_base,
+                                    cf_api_key,
+                                    &dep.mod_id.to_string(),
+                                )
+                                .await
+                                .unwrap_or(ContentType::Mod);
+                                dependencies.push(ContentPlanEntry {
+                                    downloadable: dep_ver.download_url.is_some(),
+                                    content_type: dep_type,
+                                    version: dep_ver,
+                                });
+                            } else {
+                                warnings.push(format!(
+                                    "Dependensi wajib CurseForge {} tidak memiliki versi yang kompatibel.",
+                                    dep.mod_id
+                                ));
+                            }
                         }
+                        Err(e) => warnings.push(format!(
+                            "Dependensi wajib CurseForge {} gagal diambil: {}",
+                            dep.mod_id, e.message
+                        )),
                     }
                 } else if dep.relation_type == 5 {
                     warnings.push(format!(

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   ArrowLeft,
@@ -14,7 +15,6 @@ import type {
   ContentProviderId,
   ContentType,
   Instance,
-  ProgressEvent,
 } from '@mc/shared'
 import { isVersionCompatibleWithMinecraft } from '@mc/shared'
 import { useI18n } from '../../i18n'
@@ -26,6 +26,7 @@ import {
   useIntegrations,
 } from '../../api/queries'
 import { errorMessage } from '../../api/launcher'
+import { registerInstallTask } from '../../api/task-registration'
 import { useAppStore } from '../../stores/app-store'
 import { GlassButton } from '../GlassButton/GlassButton'
 import { GlassSelect } from '../GlassSelect/GlassSelect'
@@ -65,8 +66,8 @@ export function InstanceDownloader({
   onBackToManager,
 }: InstanceDownloaderProps): ReactNode {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const pushToast = useAppStore((state) => state.pushToast)
-  const upsertInstallJob = useAppStore((state) => state.upsertInstallJob)
   const integrationsQuery = useIntegrations()
   const curseForgeReady = integrationsQuery.data?.curseforge.configured ?? false
 
@@ -82,8 +83,11 @@ export function InstanceDownloader({
   const [hideBeta, setHideBeta] = useState(false)
   const [hideAlpha, setHideAlpha] = useState(false)
   const [installTaskId, setInstallTaskId] = useState<string | null>(null)
-  const [installProgress, setInstallProgress] = useState<ProgressEvent | null>(null)
   const [failedIconKeys, setFailedIconKeys] = useState<Set<string>>(() => new Set())
+  const activeJob = useAppStore((state) =>
+    installTaskId ? state.installJobs.find((entry) => entry.taskId === installTaskId) : undefined,
+  )
+  const installProgress = activeJob?.progress ?? null
 
   const installMutation = useInstallContent()
 
@@ -221,32 +225,21 @@ export function InstanceDownloader({
 
   useEffect(() => {
     if (!installTaskId) return
-    const title = selectedProject?.title ?? t('browse.installing')
-    upsertInstallJob({ taskId: installTaskId, title, progress: null })
-    const offProg = window.launcher.on('task:progress', ({ taskId, progress }) => {
-      if (taskId === installTaskId) {
-        setInstallProgress(progress)
-        upsertInstallJob({ taskId: installTaskId, title, progress })
-      }
-    })
     const offDone = window.launcher.on('task:done', ({ taskId }) => {
       if (taskId === installTaskId) {
         setInstallTaskId(null)
-        setInstallProgress(null)
       }
     })
     const offErr = window.launcher.on('task:error', ({ taskId }) => {
       if (taskId === installTaskId) {
         setInstallTaskId(null)
-        setInstallProgress(null)
       }
     })
     return () => {
-      offProg()
       offDone()
       offErr()
     }
-  }, [installTaskId, selectedProject?.title, t, upsertInstallJob])
+  }, [installTaskId])
 
   const installedProjectIds = useMemo(() => {
     return new Set((instance.content ?? []).map((c) => c.projectId))
@@ -272,7 +265,10 @@ export function InstanceDownloader({
         versionId: selectedVersionId,
         ...(isDatapack ? { worldId } : {}),
       })
-      setInstallTaskId(res.taskId)
+      const outcome = registerInstallTask(res.taskId, selectedProject.title, queryClient, t)
+      if (outcome === 'active') {
+        setInstallTaskId(res.taskId)
+      }
     } catch (err) {
       pushToast(errorMessage(err, t('error.unknown')), 'error')
     }
@@ -591,7 +587,7 @@ export function InstanceDownloader({
                       {installMutation.isPending
                         ? t('browse.installing')
                         : isSelectedInstalled
-                          ? t('instance.downloader.installed') + ' (Pasang Ulang)'
+                          ? `${t('instance.downloader.installed')} (${t('browse.reinstall')})`
                           : t('instance.downloader.install')}
                     </GlassButton>
                   )}
@@ -600,7 +596,7 @@ export function InstanceDownloader({
             ) : (
               <div className={styles.emptySelection}>
                 <PackagePlus size={24} aria-hidden />
-                <span>Pilih salah satu item di daftar untuk melihat rincian & versi.</span>
+                <span>{t('browse.selectItemHint')}</span>
               </div>
             )}
           </div>

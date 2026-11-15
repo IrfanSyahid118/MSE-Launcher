@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use launcher_download::DownloadManager;
+use launcher_download::{DownloadManager, DownloadProgress};
 use launcher_java::JavaService;
 use launcher_loader::LoaderService;
 use launcher_platform::{DataPaths, SecretStore};
@@ -24,23 +24,128 @@ const CLASSPATH_SEPARATOR: &str = ";";
 #[cfg(not(windows))]
 const CLASSPATH_SEPARATOR: &str = ":";
 
+const LAUNCH_PROGRESS_TOTAL: u32 = 1000;
+const LAUNCH_STAGE_COUNT: u32 = 5;
+
+#[derive(Debug, Clone)]
+pub struct LaunchProgress {
+    pub stage: String,
+    pub detail: Option<String>,
+    pub completed: u32,
+    pub total: u32,
+    pub stage_index: u32,
+    pub stage_count: u32,
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn format_bytes_pair(done: u64, total: u64) -> String {
+    if total > 0 {
+        format!("{} / {}", format_bytes(done), format_bytes(total))
+    } else {
+        format_bytes(done)
+    }
+}
+
+fn make_stage_progress(
+    stage: impl Into<String>,
+    detail: Option<String>,
+    completed: u32,
+    stage_index: u32,
+) -> LaunchProgress {
+    LaunchProgress {
+        stage: stage.into(),
+        detail,
+        completed: completed.min(LAUNCH_PROGRESS_TOTAL),
+        total: LAUNCH_PROGRESS_TOTAL,
+        stage_index,
+        stage_count: LAUNCH_STAGE_COUNT,
+    }
+}
+
+fn scaled_download_progress(
+    label: &str,
+    detail_prefix: &str,
+    base: u32,
+    span: u32,
+    stage_index: u32,
+    p: &DownloadProgress,
+) -> LaunchProgress {
+    let fraction = if p.total_bytes > 0 {
+        (p.completed_bytes as f64 / p.total_bytes as f64).clamp(0.0, 1.0)
+    } else if p.total_files > 0 {
+        (p.completed_files as f64 / p.total_files as f64).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let completed = base.saturating_add((fraction * span as f64).round() as u32);
+    let stage = if p.total_files > 0 {
+        format!(
+            "{} ({}/{} · {})",
+            label,
+            p.completed_files,
+            p.total_files,
+            format_bytes_pair(p.completed_bytes, p.total_bytes)
+        )
+    } else {
+        label.to_string()
+    };
+    let detail = Some(format!(
+        "{}{} ({}/{} · {})",
+        detail_prefix,
+        p.current_file,
+        p.completed_files,
+        p.total_files,
+        format_bytes_pair(p.completed_bytes, p.total_bytes)
+    ));
+    make_stage_progress(stage, detail, completed, stage_index)
+}
+
 #[derive(Clone)]
 enum LaunchSlot {
-    Launching,
-    Running(Arc<RunningGame>),
+    Launching(u64),
+    Running { token: u64, game: Arc<RunningGame> },
+}
+
+impl LaunchSlot {
+    fn token(&self) -> u64 {
+        match self {
+            Self::Launching(token) | Self::Running { token, .. } => *token,
+        }
+    }
 }
 
 struct LaunchSlotGuard {
     running: Arc<RwLock<HashMap<String, LaunchSlot>>>,
     instance_id: String,
+    launch_token: u64,
     armed: bool,
 }
 
 impl LaunchSlotGuard {
-    fn new(running: Arc<RwLock<HashMap<String, LaunchSlot>>>, instance_id: String) -> Self {
+    fn new(
+        running: Arc<RwLock<HashMap<String, LaunchSlot>>>,
+        instance_id: String,
+        launch_token: u64,
+    ) -> Self {
         Self {
             running,
             instance_id,
+            launch_token,
             armed: true,
         }
     }
@@ -56,15 +161,16 @@ impl Drop for LaunchSlotGuard {
             return;
         }
         let id = self.instance_id.clone();
+        let token = self.launch_token;
         if let Ok(mut guard) = self.running.try_write() {
-            if matches!(guard.get(&id), Some(LaunchSlot::Launching)) {
+            if matches!(guard.get(&id), Some(LaunchSlot::Launching(cur)) if *cur == token) {
                 guard.remove(&id);
             }
         } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let map = Arc::clone(&self.running);
             handle.spawn(async move {
                 let mut guard = map.write().await;
-                if matches!(guard.get(&id), Some(LaunchSlot::Launching)) {
+                if matches!(guard.get(&id), Some(LaunchSlot::Launching(cur)) if *cur == token) {
                     guard.remove(&id);
                 }
             });
@@ -84,6 +190,7 @@ pub struct LaunchService {
     accounts: AccountsStore,
     secrets: SecretStore,
     running: Arc<RwLock<HashMap<String, LaunchSlot>>>,
+    next_launch_token: Arc<AtomicU64>,
 }
 
 impl LaunchService {
@@ -110,6 +217,7 @@ impl LaunchService {
             accounts,
             secrets,
             running: Arc::new(RwLock::new(HashMap::new())),
+            next_launch_token: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -120,12 +228,15 @@ impl LaunchService {
     pub async fn kill(&self, instance_id: &str) -> Result<(), LauncherErrorPayload> {
         let slot = self.running.read().await.get(instance_id).cloned();
         match slot {
-            Some(LaunchSlot::Running(game)) => {
+            Some(LaunchSlot::Running { token, game }) => {
                 game.kill().await?;
-                self.running.write().await.remove(instance_id);
+                let mut guard = self.running.write().await;
+                if matches!(guard.get(instance_id), Some(slot) if slot.token() == token) {
+                    guard.remove(instance_id);
+                }
                 Ok(())
             }
-            Some(LaunchSlot::Launching) => Err(LauncherErrorPayload::invalid_input(format!(
+            Some(LaunchSlot::Launching(_)) => Err(LauncherErrorPayload::invalid_input(format!(
                 "Instance '{}' sedang dalam proses peluncuran.",
                 instance_id
             ))),
@@ -152,9 +263,41 @@ impl LaunchService {
         F2: Fn(Option<i32>) + Send + Sync + 'static,
         F3: Fn(String, u32, u32) + Send + Sync + 'static,
     {
+        let on_progress = Arc::new(on_progress);
+        self.launch_with_progress(
+            instance_id,
+            version_id,
+            server_address,
+            on_log,
+            on_exit,
+            move |p: LaunchProgress| {
+                on_progress(p.stage, p.completed, p.total);
+            },
+            cancelled,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn launch_with_progress<F1, F2, F3>(
+        &self,
+        instance_id: &str,
+        version_id: &str,
+        server_address: Option<&str>,
+        on_log: F1,
+        on_exit: F2,
+        on_progress: F3,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<u32, LauncherErrorPayload>
+    where
+        F1: Fn(Vec<LogLine>) + Send + Sync + 'static,
+        F2: Fn(Option<i32>) + Send + Sync + 'static,
+        F3: Fn(LaunchProgress) + Send + Sync + 'static,
+    {
         launcher_security::validate_instance_id(instance_id)?;
         launcher_security::validate_safe_single_component(version_id)?;
 
+        let launch_token = self.next_launch_token.fetch_add(1, Ordering::Relaxed);
         {
             let mut slots = self.running.write().await;
             if slots.contains_key(instance_id) {
@@ -162,11 +305,15 @@ impl LaunchService {
                     "Game untuk instance ini sudah berjalan.",
                 ));
             }
-            slots.insert(instance_id.to_string(), LaunchSlot::Launching);
+            slots.insert(instance_id.to_string(), LaunchSlot::Launching(launch_token));
         }
 
-        let mut slot_guard =
-            LaunchSlotGuard::new(Arc::clone(&self.running), instance_id.to_string());
+        let mut slot_guard = LaunchSlotGuard::new(
+            Arc::clone(&self.running),
+            instance_id.to_string(),
+            launch_token,
+        );
+        let progress_cb = Arc::new(on_progress);
         let res = self
             .launch_inner(
                 instance_id,
@@ -174,8 +321,9 @@ impl LaunchService {
                 server_address,
                 on_log,
                 on_exit,
-                on_progress,
+                progress_cb,
                 cancelled,
+                launch_token,
                 &mut slot_guard,
             )
             .await;
@@ -183,7 +331,8 @@ impl LaunchService {
         if res.is_err() {
             slot_guard.disarm();
             let mut slots = self.running.write().await;
-            if matches!(slots.get(instance_id), Some(LaunchSlot::Launching)) {
+            if matches!(slots.get(instance_id), Some(LaunchSlot::Launching(cur)) if *cur == launch_token)
+            {
                 slots.remove(instance_id);
             }
         }
@@ -199,14 +348,15 @@ impl LaunchService {
         server_address: Option<&str>,
         on_log: F1,
         on_exit: F2,
-        on_progress: F3,
+        on_progress: Arc<F3>,
         cancelled: Arc<AtomicBool>,
+        launch_token: u64,
         slot_guard: &mut LaunchSlotGuard,
     ) -> Result<u32, LauncherErrorPayload>
     where
         F1: Fn(Vec<LogLine>) + Send + Sync + 'static,
         F2: Fn(Option<i32>) + Send + Sync + 'static,
-        F3: Fn(String, u32, u32) + Send + Sync + 'static,
+        F3: Fn(LaunchProgress) + Send + Sync + 'static,
     {
         let instance = self.instances.get(instance_id)?;
         let settings = self.settings.get();
@@ -245,7 +395,7 @@ impl LaunchService {
                     true
                 }
             } else {
-                false
+                true
             };
 
             if needs_refresh {
@@ -258,7 +408,15 @@ impl LaunchService {
             }
         }
 
-        on_progress("Memeriksa kelengkapan versi Minecraft...".to_string(), 1, 5);
+        on_progress(make_stage_progress(
+            "Memeriksa kelengkapan versi Minecraft...",
+            Some(format!(
+                "Memeriksa {} (MC {})",
+                instance.name, instance.minecraft_version
+            )),
+            20,
+            0,
+        ));
 
         let loader_java_path = if matches!(
             instance.loader.loader_type,
@@ -283,7 +441,7 @@ impl LaunchService {
                     &settings,
                     req_major,
                     req_comp,
-                    false,
+                    (25, 50, 0),
                     &on_progress,
                     Arc::clone(&cancelled),
                 )
@@ -292,6 +450,19 @@ impl LaunchService {
         } else {
             None
         };
+
+        if instance.loader.loader_type != launcher_types::LoaderType::Vanilla {
+            on_progress(make_stage_progress(
+                "Menyiapkan profil loader...",
+                Some(format!(
+                    "Memasang / memverifikasi loader {:?} {}",
+                    instance.loader.loader_type,
+                    instance.loader.version.as_deref().unwrap_or("terbaru")
+                )),
+                80,
+                0,
+            ));
+        }
 
         let detail = self
             .loaders
@@ -303,44 +474,131 @@ impl LaunchService {
             )
             .await?;
 
-        on_progress("Mengunduh library dan file game...".to_string(), 2, 5);
         let version_tasks = self.versions.build_version_download_tasks(&detail)?;
+        let total_version_tasks = version_tasks.len();
+        on_progress(make_stage_progress(
+            format!(
+                "Mengunduh library & file game ({} berkas)...",
+                total_version_tasks
+            ),
+            Some(format!(
+                "Memeriksa {} berkas library dan client JAR...",
+                total_version_tasks
+            )),
+            150,
+            1,
+        ));
+        let on_prog_libs = Arc::clone(&on_progress);
         self.downloader
-            .download_all(version_tasks, |_| {}, Arc::clone(&cancelled))
+            .download_all(
+                version_tasks,
+                move |p| {
+                    on_prog_libs(scaled_download_progress(
+                        "Mengunduh library & file game",
+                        "lib/",
+                        150,
+                        300,
+                        1,
+                        &p,
+                    ));
+                },
+                Arc::clone(&cancelled),
+            )
             .await?;
 
         if cancelled.load(Ordering::Relaxed) {
-            return Err(LauncherErrorPayload::internal("Peluncuran dibatalkan."));
+            return Err(LauncherErrorPayload::new(
+                launcher_types::ErrorCode::Cancelled,
+                "Peluncuran dibatalkan.",
+            ));
         }
 
-        on_progress("Memeriksa aset game...".to_string(), 3, 5);
+        on_progress(make_stage_progress(
+            "Memeriksa aset game...",
+            Some("Mengambil indeks aset Minecraft...".to_string()),
+            450,
+            2,
+        ));
         let asset_tasks = self.versions.fetch_asset_tasks(&detail).await?;
+        let total_asset_tasks = asset_tasks.len();
+        if total_asset_tasks > 0 {
+            on_progress(make_stage_progress(
+                format!("Memeriksa aset game ({} berkas)...", total_asset_tasks),
+                Some(format!(
+                    "Memverifikasi {} berkas aset suara & tekstur...",
+                    total_asset_tasks
+                )),
+                460,
+                2,
+            ));
+        }
+        let on_prog_assets = Arc::clone(&on_progress);
         self.downloader
-            .download_all(asset_tasks, |_| {}, Arc::clone(&cancelled))
+            .download_all(
+                asset_tasks,
+                move |p| {
+                    on_prog_assets(scaled_download_progress(
+                        "Mengunduh aset game",
+                        "assets/",
+                        460,
+                        290,
+                        2,
+                        &p,
+                    ));
+                },
+                Arc::clone(&cancelled),
+            )
             .await?;
 
         if cancelled.load(Ordering::Relaxed) {
-            return Err(LauncherErrorPayload::internal("Peluncuran dibatalkan."));
+            return Err(LauncherErrorPayload::new(
+                launcher_types::ErrorCode::Cancelled,
+                "Peluncuran dibatalkan.",
+            ));
         }
 
-        on_progress("Menyiapkan library native...".to_string(), 4, 5);
+        on_progress(make_stage_progress(
+            "Menyiapkan library native...",
+            Some("Mengekstrak library native platform ke folder instance...".to_string()),
+            760,
+            3,
+        ));
         let instance_dir = launcher_security::safe_subpath(&self.paths.instances_dir, instance_id)?;
         launcher_security::ensure_descendants_no_symlink(&self.paths.instances_dir, &instance_dir)?;
 
-        if let Ok(entries) = std::fs::read_dir(&instance_dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                    if name == "natives" || name.starts_with("natives-") {
-                        let _ = launcher_security::safe_remove_dir_all_within(&instance_dir, &p);
-                    } else if name.starts_with("args-") && name.ends_with(".txt") {
-                        let _ = launcher_security::safe_remove_file_within(&instance_dir, &p);
+        let natives_dir = {
+            let paths = self.paths.clone();
+            let detail_for_natives = detail.clone();
+            let inst_dir_for_natives = instance_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(entries) = std::fs::read_dir(&inst_dir_for_natives) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                            if name == "natives" || name.starts_with("natives-") {
+                                let _ = launcher_security::safe_remove_dir_all_within(
+                                    &inst_dir_for_natives,
+                                    &p,
+                                );
+                            } else if name.starts_with("args-") && name.ends_with(".txt") {
+                                let _ = launcher_security::safe_remove_file_within(
+                                    &inst_dir_for_natives,
+                                    &p,
+                                );
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-        let natives_dir = extract_natives(&detail, &self.paths, &instance_dir)?;
+                extract_natives(&detail_for_natives, &paths, &inst_dir_for_natives)
+            })
+            .await
+            .map_err(|e| {
+                LauncherErrorPayload::internal(format!(
+                    "Task ekstraksi library native gagal: {}",
+                    e
+                ))
+            })??
+        };
         let mut natives_guard = NativesDirGuard::new(instance_dir.clone(), natives_dir.clone());
 
         let required_major = detail
@@ -359,7 +617,7 @@ impl LaunchService {
                 &settings,
                 required_major,
                 java_component,
-                true,
+                (780, 160, 3),
                 &on_progress,
                 Arc::clone(&cancelled),
             )
@@ -380,6 +638,12 @@ impl LaunchService {
         let game_dir = launcher_security::safe_subpath(&instance_dir, "minecraft")?;
         launcher_security::ensure_dir_within(&instance_dir, &game_dir, false)?;
 
+        on_progress(make_stage_progress(
+            "Menyiapkan aset skin & konfigurasi...",
+            Some("Memeriksa skin dan membangun argumen peluncuran...".to_string()),
+            950,
+            4,
+        ));
         self.prepare_skin_artifacts(&instance, &account, &game_dir, &cancelled)
             .await?;
 
@@ -471,7 +735,6 @@ impl LaunchService {
 
         final_args.push(format!("-Djava.library.path={}", natives_dir_str));
 
-        let mut legacy_args_mode = false;
         let mut game_args = Vec::new();
 
         let current_os = if cfg!(target_os = "windows") {
@@ -499,14 +762,16 @@ impl LaunchService {
                 game_args = expand_arguments_json(game_val, &vars, current_os, current_arch);
             }
         } else if let Some(ref legacy_args) = detail.minecraft_arguments {
-            legacy_args_mode = true;
             let parts: Vec<&str> = legacy_args.split_whitespace().collect();
             for p in parts {
                 game_args.push(crate::args::replace_variables(p, &vars));
             }
         }
 
-        if legacy_args_mode {
+        if !final_args
+            .iter()
+            .any(|a| a == "-cp" || a == "-classpath" || a == "--class-path")
+        {
             final_args.push("-cp".to_string());
             final_args.push(classpath_str.clone());
         }
@@ -541,59 +806,116 @@ impl LaunchService {
                 (final_args, None)
             };
 
-        on_progress("Meluncurkan proses Minecraft...".to_string(), 5, 5);
+        on_progress(make_stage_progress(
+            "Meluncurkan proses Minecraft...",
+            Some(format!(
+                "Menjalankan JVM Java {}...",
+                java_inst.major_version
+            )),
+            990,
+            4,
+        ));
 
         let running_map = Arc::clone(&self.running);
         let inst_id_clone = instance_id.to_string();
-        let argfile_exit = created_argfile.clone();
         let inst_dir_exit = instance_dir.clone();
         let natives_dir_exit = natives_dir.clone();
+        let process_exited = Arc::new(AtomicBool::new(false));
+        let exited_flag = Arc::clone(&process_exited);
+        let argfile_slot = Arc::new(std::sync::Mutex::new(created_argfile.clone()));
+        let argfile_on_log = Arc::clone(&argfile_slot);
+        let inst_dir_on_log = instance_dir.clone();
+        let argfile_on_exit = Arc::clone(&argfile_slot);
+        let on_exit_cb = Arc::new(on_exit);
+
+        let wrapped_log = move |lines: Vec<LogLine>| {
+            if let Ok(mut slot) = argfile_on_log.lock() {
+                if let Some(argfile) = slot.take() {
+                    let _ = launcher_security::safe_remove_file_within(&inst_dir_on_log, &argfile);
+                }
+            }
+            on_log(lines);
+        };
 
         let wrapped_exit = move |code: Option<i32>| {
-            if let Some(ref argfile) = argfile_exit {
-                let _ = launcher_security::safe_remove_file_within(&inst_dir_exit, argfile);
+            exited_flag.store(true, Ordering::Release);
+            if let Ok(mut slot) = argfile_on_exit.lock() {
+                if let Some(argfile) = slot.take() {
+                    let _ = launcher_security::safe_remove_file_within(&inst_dir_exit, &argfile);
+                }
             }
             let _ =
                 launcher_security::safe_remove_dir_all_within(&inst_dir_exit, &natives_dir_exit);
             let map = Arc::clone(&running_map);
             let id = inst_id_clone.clone();
+            let cb = Arc::clone(&on_exit_cb);
             tokio::spawn(async move {
-                map.write().await.remove(&id);
+                // Remove running slot before notifying callers so an immediate relaunch sees the slot free.
+                {
+                    let mut guard = map.write().await;
+                    if matches!(guard.get(&id), Some(slot) if slot.token() == launch_token) {
+                        guard.remove(&id);
+                    }
+                }
+                cb(code);
             });
-            on_exit(code);
         };
 
-        let running_game =
-            match spawn_game_process(&validated_java, &exec_args, &game_dir, on_log, wrapped_exit)
-                .await
-            {
-                Ok(rg) => {
-                    natives_guard.disarm();
-                    rg
-                }
-                Err(e) => {
-                    if let Some(ref argfile) = created_argfile {
-                        let _ = launcher_security::safe_remove_file_within(&instance_dir, argfile);
+        let running_game = match spawn_game_process(
+            &validated_java,
+            &exec_args,
+            &game_dir,
+            wrapped_log,
+            wrapped_exit,
+        )
+        .await
+        {
+            Ok(rg) => {
+                natives_guard.disarm();
+                rg
+            }
+            Err(e) => {
+                if let Ok(mut slot) = argfile_slot.lock() {
+                    if let Some(argfile) = slot.take() {
+                        let _ = launcher_security::safe_remove_file_within(&instance_dir, &argfile);
                     }
-                    return Err(e);
                 }
-            };
+                return Err(e);
+            }
+        };
 
-        // Remove argfile immediately after spawn so tokens do not remain on disk.
-        if let Some(argfile) = created_argfile {
+        // Fallback cleanup if JVM stays silent longer than startup so tokens do not linger on disk.
+        if created_argfile.is_some() {
             let inst_dir_bg = instance_dir.clone();
+            let argfile_bg = Arc::clone(&argfile_slot);
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                let _ = launcher_security::safe_remove_file_within(&inst_dir_bg, &argfile);
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                if let Ok(mut slot) = argfile_bg.lock() {
+                    if let Some(argfile) = slot.take() {
+                        let _ = launcher_security::safe_remove_file_within(&inst_dir_bg, &argfile);
+                    }
+                }
             });
         }
 
         let pid = running_game.pid;
         slot_guard.disarm();
-        self.running.write().await.insert(
-            instance_id.to_string(),
-            LaunchSlot::Running(Arc::new(running_game)),
-        );
+        {
+            let mut guard = self.running.write().await;
+            if process_exited.load(Ordering::Acquire) {
+                if matches!(guard.get(instance_id), Some(slot) if slot.token() == launch_token) {
+                    guard.remove(instance_id);
+                }
+            } else {
+                guard.insert(
+                    instance_id.to_string(),
+                    LaunchSlot::Running {
+                        token: launch_token,
+                        game: Arc::new(running_game),
+                    },
+                );
+            }
+        }
 
         if let Ok(mut updated_inst) = self.instances.get(instance_id) {
             updated_inst.last_played_at = Some(chrono::Utc::now().to_rfc3339());
@@ -675,26 +997,42 @@ impl LaunchService {
             return Ok(());
         }
 
-        let skins_dir = self.paths.root.join("skins");
-        let cached_skin_exists = launcher_security::validate_instance_id(&account.id).is_ok()
-            && launcher_security::safe_subpath(&skins_dir, &format!("{}.png", account.id))
+        let this = self.clone();
+        let account_owned = account.clone();
+        let game_dir_owned = game_dir.to_path_buf();
+        let loader_type = instance.loader.loader_type;
+        let (has_custom_skin, has_csl_mod) = tokio::task::spawn_blocking(move || {
+            let skins_dir = this.paths.root.join("skins");
+            let cached_skin_exists = launcher_security::validate_instance_id(&account_owned.id)
+                .is_ok()
+                && launcher_security::safe_subpath(
+                    &skins_dir,
+                    &format!("{}.png", account_owned.id),
+                )
                 .map(|p| p.exists())
                 .unwrap_or(false);
-        let has_custom_skin = account.skin_url.is_some() || cached_skin_exists;
+            let has_custom_skin = account_owned.skin_url.is_some() || cached_skin_exists;
 
-        if has_custom_skin {
-            self.prepare_skin_resourcepack(account, game_dir);
-        }
+            if has_custom_skin {
+                this.prepare_skin_resourcepack(&account_owned, &game_dir_owned);
+            }
 
-        let has_csl_mod = instance.loader.loader_type != launcher_types::LoaderType::Vanilla
-            && std::fs::read_dir(game_dir.join("mods"))
-                .map(|entries| {
-                    entries.flatten().any(|e| {
-                        let name = e.file_name().to_string_lossy().to_lowercase();
-                        name.contains("customskinloader") && name.ends_with(".jar")
+            let has_csl_mod = loader_type != launcher_types::LoaderType::Vanilla
+                && std::fs::read_dir(game_dir_owned.join("mods"))
+                    .map(|entries| {
+                        entries.flatten().any(|e| {
+                            let name = e.file_name().to_string_lossy().to_lowercase();
+                            name.contains("customskinloader") && name.ends_with(".jar")
+                        })
                     })
-                })
-                .unwrap_or(false);
+                    .unwrap_or(false);
+
+            (has_custom_skin, has_csl_mod)
+        })
+        .await
+        .map_err(|e| {
+            LauncherErrorPayload::internal(format!("Gagal menyiapkan resource pack skin: {}", e))
+        })?;
 
         if has_custom_skin || has_csl_mod {
             self.prepare_custom_skin_loader(account, game_dir, cancelled)
@@ -722,8 +1060,7 @@ impl LaunchService {
 
         let csl_dir = game_dir.join("CustomSkinLoader");
         let local_skins_dir = csl_dir.join("LocalSkin").join("skins");
-        launcher_security::ensure_dir_within(game_dir, &local_skins_dir, false)?;
-
+        let local_capes_dir = csl_dir.join("LocalSkin").join("capes");
         let user_skin_path = launcher_security::safe_subpath(
             &local_skins_dir,
             &format!("{}.png", account.username),
@@ -732,101 +1069,6 @@ impl LaunchService {
             &local_skins_dir,
             &format!("{}.png", account.username.to_lowercase()),
         )?;
-
-        let copy_targets = |src: &std::path::Path| {
-            let _ = std::fs::copy(src, &user_skin_path);
-            let _ = std::fs::copy(src, &user_skin_lower_path);
-            let _ = std::fs::copy(src, local_skins_dir.join("Steve.png"));
-            let _ = std::fs::copy(src, local_skins_dir.join("Alex.png"));
-            let _ = std::fs::copy(src, local_skins_dir.join("default.png"));
-        };
-
-        let write_targets = |bytes: &[u8]| {
-            let _ = std::fs::write(&user_skin_path, bytes);
-            let _ = std::fs::write(&user_skin_lower_path, bytes);
-            let _ = std::fs::write(local_skins_dir.join("Steve.png"), bytes);
-            let _ = std::fs::write(local_skins_dir.join("Alex.png"), bytes);
-            let _ = std::fs::write(local_skins_dir.join("default.png"), bytes);
-        };
-
-        let is_valid_png_file = |path: &std::path::Path| -> bool {
-            const MAX_TEXTURE_BYTES: u64 = 2 * 1024 * 1024;
-            const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-            let Ok(meta) = std::fs::metadata(path) else {
-                return false;
-            };
-            if meta.len() < PNG_MAGIC.len() as u64 || meta.len() > MAX_TEXTURE_BYTES {
-                return false;
-            }
-            let Ok(mut f) = std::fs::File::open(path) else {
-                return false;
-            };
-            let mut magic = [0u8; 8];
-            std::io::Read::read_exact(&mut f, &mut magic).is_ok() && magic == PNG_MAGIC
-        };
-        let is_valid_png_bytes = |bytes: &[u8]| -> bool {
-            const MAX_TEXTURE_BYTES: usize = 2 * 1024 * 1024;
-            const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-            bytes.len() <= MAX_TEXTURE_BYTES && bytes.starts_with(&PNG_MAGIC)
-        };
-
-        let skins_dir = self.paths.root.join("skins");
-        let cached_skin =
-            launcher_security::safe_subpath(&skins_dir, &format!("{}.png", account.id))?;
-
-        if let Some(ref skin_source) = account.skin_url {
-            if skin_source.starts_with("data:image/") {
-                if let Some((_, b64)) = skin_source.split_once(',') {
-                    if let Some(bytes) = decode_base64(b64) {
-                        if is_valid_png_bytes(&bytes) {
-                            write_targets(&bytes);
-                        }
-                    }
-                }
-            } else if skin_source.starts_with("https://") || skin_source.starts_with("http://") {
-                if cached_skin.exists()
-                    && launcher_security::ensure_descendants_no_symlink(&skins_dir, &cached_skin)
-                        .is_ok()
-                {
-                    copy_targets(&cached_skin);
-                } else {
-                    let https_url = if skin_source.starts_with("http://") {
-                        skin_source.replacen("http://", "https://", 1)
-                    } else {
-                        skin_source.clone()
-                    };
-                    let task = launcher_download::DownloadTask {
-                        url: https_url,
-                        destination: user_skin_path.clone(),
-                        expected_sha1: None,
-                        expected_sha256: None,
-                        expected_size: None,
-                    };
-                    let _ = self
-                        .downloader
-                        .download_all(vec![task], |_| {}, Arc::clone(cancelled))
-                        .await;
-                    if user_skin_path.exists() {
-                        if is_valid_png_file(&user_skin_path) {
-                            copy_targets(&user_skin_path);
-                        } else {
-                            let _ = std::fs::remove_file(&user_skin_path);
-                        }
-                    }
-                }
-            } else if cached_skin.exists()
-                && launcher_security::ensure_descendants_no_symlink(&skins_dir, &cached_skin)
-                    .is_ok()
-            {
-                copy_targets(&cached_skin);
-            }
-        } else {
-            let default_bytes = launcher_archive::get_default_skin_bytes(is_slim);
-            write_targets(&default_bytes);
-        }
-
-        let local_capes_dir = csl_dir.join("LocalSkin").join("capes");
-        launcher_security::ensure_dir_within(game_dir, &local_capes_dir, false)?;
         let target_cape = launcher_security::safe_subpath(
             &local_capes_dir,
             &format!("{}.png", account.username),
@@ -835,92 +1077,256 @@ impl LaunchService {
             &local_capes_dir,
             &format!("{}.png", account.username.to_lowercase()),
         )?;
+
+        let skins_dir = self.paths.root.join("skins");
+        let cached_skin =
+            launcher_security::safe_subpath(&skins_dir, &format!("{}.png", account.id))?;
         let cached_cape =
             launcher_security::safe_subpath(&skins_dir, &format!("{}_cape.png", account.id))?;
-        let cached_cape_ok = cached_cape.exists()
-            && launcher_security::ensure_descendants_no_symlink(&skins_dir, &cached_cape).is_ok();
 
-        if let Some(ref cape_source) = account.cape_url {
-            if cape_source.starts_with("data:image/") {
-                if let Some((_, b64)) = cape_source.split_once(',') {
-                    if let Some(bytes) = decode_base64(b64) {
-                        if is_valid_png_bytes(&bytes) {
-                            let _ = std::fs::write(&target_cape, &bytes);
-                            let _ = std::fs::write(&target_cape_lower, &bytes);
-                            let _ = std::fs::write(local_capes_dir.join("default.png"), &bytes);
+        let game_dir_owned = game_dir.to_path_buf();
+        let account_skin = account.skin_url.clone();
+        let account_cape = account.cape_url.clone();
+
+        let (need_skin_download, need_cape_download) = {
+            let local_skins_dir = local_skins_dir.clone();
+            let local_capes_dir = local_capes_dir.clone();
+            let user_skin_path = user_skin_path.clone();
+            let user_skin_lower_path = user_skin_lower_path.clone();
+            let cached_skin = cached_skin.clone();
+            let skins_dir = skins_dir.clone();
+            let game_dir_owned = game_dir_owned.clone();
+            let account_skin = account_skin.clone();
+            tokio::task::spawn_blocking(
+                move || -> Result<(Option<String>, bool), LauncherErrorPayload> {
+                    launcher_security::ensure_dir_within(&game_dir_owned, &local_skins_dir, false)?;
+                    launcher_security::ensure_dir_within(&game_dir_owned, &local_capes_dir, false)?;
+
+                    let copy_skin_targets = |src: &std::path::Path| {
+                        let _ = std::fs::copy(src, &user_skin_path);
+                        let _ = std::fs::copy(src, &user_skin_lower_path);
+                        let _ = std::fs::copy(src, local_skins_dir.join("Steve.png"));
+                        let _ = std::fs::copy(src, local_skins_dir.join("Alex.png"));
+                        let _ = std::fs::copy(src, local_skins_dir.join("default.png"));
+                    };
+                    let write_skin_targets = |bytes: &[u8]| {
+                        let _ = std::fs::write(&user_skin_path, bytes);
+                        let _ = std::fs::write(&user_skin_lower_path, bytes);
+                        let _ = std::fs::write(local_skins_dir.join("Steve.png"), bytes);
+                        let _ = std::fs::write(local_skins_dir.join("Alex.png"), bytes);
+                        let _ = std::fs::write(local_skins_dir.join("default.png"), bytes);
+                    };
+
+                    let mut download_skin_url = None;
+                    let cached_skin_ok = cached_skin.exists()
+                        && launcher_security::ensure_descendants_no_symlink(
+                            &skins_dir,
+                            &cached_skin,
+                        )
+                        .is_ok();
+                    if let Some(ref skin_source) = account_skin {
+                        if skin_source.starts_with("data:image/") {
+                            if let Some((_, b64)) = skin_source.split_once(',') {
+                                if let Some(bytes) = decode_base64(b64) {
+                                    if is_valid_csl_png_bytes(&bytes) {
+                                        write_skin_targets(&bytes);
+                                    }
+                                }
+                            }
+                        } else if skin_source.starts_with("https://")
+                            || skin_source.starts_with("http://")
+                        {
+                            if cached_skin_ok {
+                                copy_skin_targets(&cached_skin);
+                            } else {
+                                download_skin_url = Some(if skin_source.starts_with("http://") {
+                                    skin_source.replacen("http://", "https://", 1)
+                                } else {
+                                    skin_source.clone()
+                                });
+                            }
+                        } else if cached_skin_ok {
+                            copy_skin_targets(&cached_skin);
                         }
-                    }
-                }
-            } else if cached_cape_ok {
-                let _ = std::fs::copy(&cached_cape, &target_cape);
-                let _ = std::fs::copy(&cached_cape, &target_cape_lower);
-                let _ = std::fs::copy(&cached_cape, local_capes_dir.join("default.png"));
-            } else if cape_source.starts_with("https://") || cape_source.starts_with("http://") {
-                let https_url = if cape_source.starts_with("http://") {
-                    cape_source.replacen("http://", "https://", 1)
-                } else {
-                    cape_source.clone()
-                };
-                let task = launcher_download::DownloadTask {
-                    url: https_url,
-                    destination: target_cape.clone(),
-                    expected_sha1: None,
-                    expected_sha256: None,
-                    expected_size: None,
-                };
-                let _ = self
-                    .downloader
-                    .download_all(vec![task], |_| {}, Arc::clone(cancelled))
-                    .await;
-                if target_cape.exists() {
-                    if is_valid_png_file(&target_cape) {
-                        let _ = std::fs::copy(&target_cape, &target_cape_lower);
-                        let _ = std::fs::copy(&target_cape, local_capes_dir.join("default.png"));
                     } else {
-                        let _ = std::fs::remove_file(&target_cape);
+                        let default_bytes = launcher_archive::get_default_skin_bytes(is_slim);
+                        write_skin_targets(&default_bytes);
+                    }
+
+                    Ok((download_skin_url, false))
+                },
+            )
+            .await
+            .map_err(|e| {
+                LauncherErrorPayload::internal(format!(
+                    "Gagal menyiapkan skin CustomSkinLoader: {}",
+                    e
+                ))
+            })??
+        };
+        let _ = need_cape_download;
+
+        if let Some(https_url) = need_skin_download {
+            let task = launcher_download::DownloadTask {
+                url: https_url,
+                destination: user_skin_path.clone(),
+                expected_sha1: None,
+                expected_sha256: None,
+                expected_size: None,
+            };
+            let _ = self
+                .downloader
+                .download_all(vec![task], |_| {}, Arc::clone(cancelled))
+                .await;
+            let user_skin_path_chk = user_skin_path.clone();
+            let user_skin_lower_chk = user_skin_lower_path.clone();
+            let local_skins_dir_chk = local_skins_dir.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if user_skin_path_chk.exists() {
+                    if is_valid_csl_png_file(&user_skin_path_chk) {
+                        let _ = std::fs::copy(&user_skin_path_chk, &user_skin_lower_chk);
+                        let _ = std::fs::copy(
+                            &user_skin_path_chk,
+                            local_skins_dir_chk.join("Steve.png"),
+                        );
+                        let _ = std::fs::copy(
+                            &user_skin_path_chk,
+                            local_skins_dir_chk.join("Alex.png"),
+                        );
+                        let _ = std::fs::copy(
+                            &user_skin_path_chk,
+                            local_skins_dir_chk.join("default.png"),
+                        );
+                    } else {
+                        let _ = std::fs::remove_file(&user_skin_path_chk);
                     }
                 }
-            }
-        } else if cached_cape_ok {
-            let _ = std::fs::copy(&cached_cape, &target_cape);
-            let _ = std::fs::copy(&cached_cape, &target_cape_lower);
-            let _ = std::fs::copy(&cached_cape, local_capes_dir.join("default.png"));
+            })
+            .await;
         }
 
-        // Preserve existing CustomSkinLoader.json so user customizations stay intact.
-        let config_file = csl_dir.join("CustomSkinLoader.json");
-        if !config_file.exists() {
-            let default_config = serde_json::json!({
-                "version": "14.15",
-                "loadlist": [
+        let cape_download_url = {
+            let local_capes_dir = local_capes_dir.clone();
+            let target_cape = target_cape.clone();
+            let target_cape_lower = target_cape_lower.clone();
+            let cached_cape = cached_cape.clone();
+            let skins_dir = skins_dir.clone();
+            let csl_dir = csl_dir.clone();
+            let model_str = model_str.to_string();
+            let account_cape = account_cape.clone();
+            tokio::task::spawn_blocking(move || {
+                let cached_cape_ok = cached_cape.exists()
+                    && launcher_security::ensure_descendants_no_symlink(&skins_dir, &cached_cape)
+                        .is_ok();
+                let mut download_cape_url = None;
+
+                if let Some(ref cape_source) = account_cape {
+                    if cape_source.starts_with("data:image/") {
+                        if let Some((_, b64)) = cape_source.split_once(',') {
+                            if let Some(bytes) = decode_base64(b64) {
+                                if is_valid_csl_png_bytes(&bytes) {
+                                    let _ = std::fs::write(&target_cape, &bytes);
+                                    let _ = std::fs::write(&target_cape_lower, &bytes);
+                                    let _ =
+                                        std::fs::write(local_capes_dir.join("default.png"), &bytes);
+                                }
+                            }
+                        }
+                    } else if cached_cape_ok {
+                        let _ = std::fs::copy(&cached_cape, &target_cape);
+                        let _ = std::fs::copy(&cached_cape, &target_cape_lower);
+                        let _ = std::fs::copy(&cached_cape, local_capes_dir.join("default.png"));
+                    } else if cape_source.starts_with("https://")
+                        || cape_source.starts_with("http://")
                     {
-                        "name": "LocalSkin",
-                        "type": "Legacy",
-                        "checkPNG": false,
-                        "skin": "LocalSkin/skins/{USERNAME}.png",
-                        "model": model_str,
-                        "cape": "LocalSkin/capes/{USERNAME}.png"
-                    },
-                    {
-                        "name": "Mojang",
-                        "type": "Mojang"
-                    },
-                    {
-                        "name": "LittleSkin",
-                        "type": "Custom",
-                        "root": "https://littleskin.cn/csl/"
-                    },
-                    {
-                        "name": "ElyBy",
-                        "type": "Custom",
-                        "root": "https://skin.ely.by/csl/"
+                        download_cape_url = Some(if cape_source.starts_with("http://") {
+                            cape_source.replacen("http://", "https://", 1)
+                        } else {
+                            cape_source.clone()
+                        });
                     }
-                ]
-            });
-            let _ = std::fs::write(
-                &config_file,
-                serde_json::to_string_pretty(&default_config).unwrap_or_default(),
-            );
+                } else if cached_cape_ok {
+                    let _ = std::fs::copy(&cached_cape, &target_cape);
+                    let _ = std::fs::copy(&cached_cape, &target_cape_lower);
+                    let _ = std::fs::copy(&cached_cape, local_capes_dir.join("default.png"));
+                }
+
+                // Preserve existing CustomSkinLoader.json so user customizations stay intact.
+                let config_file = csl_dir.join("CustomSkinLoader.json");
+                if !config_file.exists() {
+                    let default_config = serde_json::json!({
+                        "version": "14.15",
+                        "loadlist": [
+                            {
+                                "name": "LocalSkin",
+                                "type": "Legacy",
+                                "checkPNG": false,
+                                "skin": "LocalSkin/skins/{USERNAME}.png",
+                                "model": model_str,
+                                "cape": "LocalSkin/capes/{USERNAME}.png"
+                            },
+                            {
+                                "name": "Mojang",
+                                "type": "Mojang"
+                            },
+                            {
+                                "name": "LittleSkin",
+                                "type": "Custom",
+                                "root": "https://littleskin.cn/csl/"
+                            },
+                            {
+                                "name": "ElyBy",
+                                "type": "Custom",
+                                "root": "https://skin.ely.by/csl/"
+                            }
+                        ]
+                    });
+                    let _ = std::fs::write(
+                        &config_file,
+                        serde_json::to_string_pretty(&default_config).unwrap_or_default(),
+                    );
+                }
+
+                download_cape_url
+            })
+            .await
+            .map_err(|e| {
+                LauncherErrorPayload::internal(format!(
+                    "Gagal menyiapkan konfigurasi CustomSkinLoader: {}",
+                    e
+                ))
+            })?
+        };
+
+        if let Some(https_url) = cape_download_url {
+            let task = launcher_download::DownloadTask {
+                url: https_url,
+                destination: target_cape.clone(),
+                expected_sha1: None,
+                expected_sha256: None,
+                expected_size: None,
+            };
+            let _ = self
+                .downloader
+                .download_all(vec![task], |_| {}, Arc::clone(cancelled))
+                .await;
+            let target_cape_chk = target_cape.clone();
+            let target_cape_lower_chk = target_cape_lower.clone();
+            let local_capes_dir_chk = local_capes_dir.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if target_cape_chk.exists() {
+                    if is_valid_csl_png_file(&target_cape_chk) {
+                        let _ = std::fs::copy(&target_cape_chk, &target_cape_lower_chk);
+                        let _ = std::fs::copy(
+                            &target_cape_chk,
+                            local_capes_dir_chk.join("default.png"),
+                        );
+                    } else {
+                        let _ = std::fs::remove_file(&target_cape_chk);
+                    }
+                }
+            })
+            .await;
         }
 
         Ok(())
@@ -933,12 +1339,12 @@ impl LaunchService {
         settings: &Settings,
         required_major: u32,
         java_component: Option<&str>,
-        emit_progress: bool,
-        on_progress: &F,
+        progress_range: (u32, u32, u32),
+        on_progress: &Arc<F>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<JavaInstallation, LauncherErrorPayload>
     where
-        F: Fn(String, u32, u32) + Send + Sync + 'static,
+        F: Fn(LaunchProgress) + Send + Sync + 'static,
     {
         if instance.java.mode == InstanceJavaMode::Custom {
             let custom_path = instance
@@ -976,24 +1382,40 @@ impl LaunchService {
             }
 
             if cancelled.load(Ordering::Relaxed) {
-                return Err(LauncherErrorPayload::internal("Peluncuran dibatalkan."));
+                return Err(LauncherErrorPayload::new(
+                    launcher_types::ErrorCode::Cancelled,
+                    "Peluncuran dibatalkan.",
+                ));
             }
 
-            if emit_progress {
-                on_progress(
-                    format!("Mengunduh runtime Java {} resmi Mojang...", required_major),
-                    4,
-                    5,
-                );
-            }
+            let (base, span, stage_idx) = progress_range;
+            on_progress(make_stage_progress(
+                format!("Mengunduh runtime Java {} resmi Mojang...", required_major),
+                Some(format!(
+                    "Mengambil manifes Java {} dari Mojang...",
+                    required_major
+                )),
+                base,
+                stage_idx,
+            ));
 
+            let on_prog_java = Arc::clone(on_progress);
             return self
                 .java
                 .ensure(
                     required_major,
                     java_component,
                     &self.downloader,
-                    |_| {},
+                    move |p| {
+                        on_prog_java(scaled_download_progress(
+                            &format!("Mengunduh runtime Java {}", required_major),
+                            "runtime/",
+                            base,
+                            span,
+                            stage_idx,
+                            &p,
+                        ));
+                    },
                     cancelled,
                 )
                 .await;
@@ -1055,6 +1477,28 @@ pub(crate) fn collect_jvm_args(instance: &Instance, settings: &Settings) -> Vec<
     }
 
     args
+}
+
+fn is_valid_csl_png_file(path: &std::path::Path) -> bool {
+    const MAX_TEXTURE_BYTES: u64 = 2 * 1024 * 1024;
+    const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() < PNG_MAGIC.len() as u64 || meta.len() > MAX_TEXTURE_BYTES {
+        return false;
+    }
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 8];
+    std::io::Read::read_exact(&mut f, &mut magic).is_ok() && magic == PNG_MAGIC
+}
+
+fn is_valid_csl_png_bytes(bytes: &[u8]) -> bool {
+    const MAX_TEXTURE_BYTES: usize = 2 * 1024 * 1024;
+    const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    bytes.len() <= MAX_TEXTURE_BYTES && bytes.starts_with(&PNG_MAGIC)
 }
 
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
@@ -1179,5 +1623,33 @@ impl Drop for NativesDirGuard {
         if let Some((instance_dir, natives_dir)) = self.target.take() {
             let _ = launcher_security::safe_remove_dir_all_within(&instance_dir, &natives_dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scaled_download_progress_formats_bytes_and_detail() {
+        let p = DownloadProgress {
+            completed_files: 5,
+            total_files: 10,
+            completed_bytes: 5 * 1024 * 1024,
+            total_bytes: 10 * 1024 * 1024,
+            current_file: "lwjgl-3.3.3.jar".to_string(),
+        };
+        let progress =
+            scaled_download_progress("Mengunduh library & file game", "lib/", 150, 300, 1, &p);
+        assert_eq!(progress.completed, 300);
+        assert_eq!(progress.total, 1000);
+        assert_eq!(progress.stage_index, 1);
+        assert_eq!(progress.stage_count, 5);
+        assert!(progress.stage.contains("5/10"));
+        assert!(progress.stage.contains("5.0 MB / 10.0 MB"));
+        assert_eq!(
+            progress.detail.as_deref(),
+            Some("lib/lwjgl-3.3.3.jar (5/10 · 5.0 MB / 10.0 MB)")
+        );
     }
 }

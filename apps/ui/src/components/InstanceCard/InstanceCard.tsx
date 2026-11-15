@@ -11,6 +11,7 @@ export interface InstanceCardProps {
   instance: Instance
   onLaunch(instance: Instance): void
   isLaunching?: boolean
+  isRunning?: boolean
 }
 
 function loaderBadge(instance: Instance): string {
@@ -24,9 +25,20 @@ function loaderBadge(instance: Instance): string {
  * Kartu instance. Menampilkan icon modpack creator jika instance merupakan modpack,
  * atau icon default grass block untuk instance standar/vanilla.
  */
-export function InstanceCard({ instance, onLaunch, isLaunching }: InstanceCardProps): ReactNode {
+export function InstanceCard({
+  instance,
+  onLaunch,
+  isLaunching,
+  isRunning,
+}: InstanceCardProps): ReactNode {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const isBusy = Boolean(isLaunching || isRunning)
+  const playLabel = isRunning
+    ? t('home.running')
+    : isLaunching
+      ? t('home.launching')
+      : t('instances.play')
 
   return (
     <article className={styles.card} data-testid={`instance-card-${instance.id}`}>
@@ -64,18 +76,18 @@ export function InstanceCard({ instance, onLaunch, isLaunching }: InstanceCardPr
         </button>
         <button
           type="button"
-          className={`${styles.actionButton} ${styles.playButton}`}
+          className={`${styles.actionButton} ${styles.playButton} ${isRunning ? styles.runningButton : ''}`}
           onClick={() => onLaunch(instance)}
-          disabled={isLaunching}
-          aria-label={t('instances.play')}
-          title={t('instances.play')}
+          disabled={isBusy}
+          aria-label={playLabel}
+          title={playLabel}
         >
-          {isLaunching ? (
+          {isLaunching && !isRunning ? (
             <Spinner size={14} />
           ) : (
             <Play size={14} fill="currentColor" aria-hidden />
           )}
-          <span>{isLaunching ? t('home.launching') : t('instances.play')}</span>
+          <span>{playLabel}</span>
         </button>
       </div>
     </article>

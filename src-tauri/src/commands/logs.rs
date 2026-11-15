@@ -64,7 +64,10 @@ pub fn logs_create_diagnostic(
                 .join("minecraft")
                 .join("logs")
                 .join("latest.log");
-            if latest.exists() {
+            if launcher_security::ensure_descendants_no_symlink(&state.paths.instances_dir, &latest)
+                .is_ok()
+                && latest.exists()
+            {
                 fallback_latest_log = Some(latest);
             }
         }

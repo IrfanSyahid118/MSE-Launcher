@@ -34,6 +34,7 @@ launcher-archive = { path = "../crates/launcher-archive" }
 launcher-discord = { path = "../crates/launcher-discord" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }

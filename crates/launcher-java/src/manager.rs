@@ -76,6 +76,31 @@ pub(crate) fn resolve_manifest_rel_path(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManagedJavaMarker {
+    component: String,
+    major_version: u32,
+}
+
+fn runtime_install_lock(target_dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    use std::sync::{Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .entry(target_dir.to_path_buf())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+fn is_compatible_major(requested: u32, actual: u32) -> bool {
+    match requested {
+        0..=8 => actual == 8,
+        16 | 17 | 21 | 25 => actual == requested,
+        other => actual >= other,
+    }
+}
+
 pub fn component_for_major(major: u32) -> &'static str {
     match major {
         8 => "jre-legacy",
@@ -134,23 +159,37 @@ where
     launcher_security::validate_safe_single_component(component)?;
     let platform_dir = paths.runtimes_dir.join(PLATFORM_KEY);
     let target_dir = launcher_security::safe_subpath(&platform_dir, component)?;
-    let java_exe = target_dir.join("bin").join(JAVA_BIN_NAME);
+    let _install_guard = runtime_install_lock(&target_dir);
+    let _lock = _install_guard.lock().await;
 
-    if java_exe.exists() {
-        if let Ok(output) = probe(&java_exe) {
-            if let Ok(inst) = parse_java_output(&output, &java_exe, paths) {
-                if inst.major_version == major {
-                    return Ok(inst);
+    launcher_security::ensure_descendants_no_symlink(&platform_dir, &target_dir)?;
+    let java_exe = target_dir.join("bin").join(JAVA_BIN_NAME);
+    launcher_security::ensure_descendants_no_symlink(&target_dir, &java_exe)?;
+    let marker_file = target_dir.join(".mse-java-complete.json");
+
+    if marker_file.is_file() && java_exe.is_file() {
+        if let Ok(Some(marker)) =
+            launcher_storage::read_json_file::<ManagedJavaMarker>(&marker_file)
+        {
+            if marker.component == component {
+                if let Ok(output) = probe(&java_exe) {
+                    if let Ok(inst) = parse_java_output(&output, &java_exe, paths) {
+                        if is_compatible_major(major, inst.major_version) {
+                            return Ok(inst);
+                        }
+                        tracing::warn!(
+                            "Java managed di {:?} memiliki major version {} (dibutuhkan {}), mengunduh ulang.",
+                            java_exe,
+                            inst.major_version,
+                            major
+                        );
+                    }
                 }
-                tracing::warn!(
-                    "Java managed di {:?} memiliki major version {} (dibutuhkan {}), mengunduh ulang.",
-                    java_exe,
-                    inst.major_version,
-                    major
-                );
             }
         }
     }
+
+    let _ = std::fs::remove_file(&marker_file);
 
     let catalog: HashMap<String, HashMap<String, Vec<RuntimeCatalogEntry>>> =
         http.get_json(catalog_url).await?;
@@ -245,7 +284,21 @@ where
     }
 
     let output = probe(&java_exe)?;
-    parse_java_output(&output, &java_exe, paths)
+    let inst = parse_java_output(&output, &java_exe, paths)?;
+    if !is_compatible_major(major, inst.major_version) {
+        return Err(LauncherErrorPayload::internal(format!(
+            "Runtime Java yang diunduh memiliki major version {} (dibutuhkan {}).",
+            inst.major_version, major
+        )));
+    }
+    launcher_storage::write_json_atomic(
+        &marker_file,
+        &ManagedJavaMarker {
+            component: component.to_string(),
+            major_version: inst.major_version,
+        },
+    )?;
+    Ok(inst)
 }
 
 #[cfg(test)]
@@ -308,5 +361,65 @@ mod tests {
             res.is_err(),
             "ensure_managed_java must not return cached Java 17 when major 21 is requested"
         );
+    }
+
+    #[tokio::test]
+    async fn test_h12_managed_java_requires_complete_marker() {
+        let tmp = tempdir().unwrap();
+        let paths = DataPaths::new(tmp.path());
+        let component = component_for_major(21);
+        let runtime_dir = paths.runtimes_dir.join(PLATFORM_KEY).join(component);
+        let java_exe = runtime_dir.join("bin").join(JAVA_BIN_NAME);
+        std::fs::create_dir_all(java_exe.parent().unwrap()).unwrap();
+        std::fs::write(&java_exe, b"fake").unwrap();
+
+        let http = HttpClient::default();
+        let dm = DownloadManager::new(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let valid_probe = |_: &Path| {
+            Ok(
+                "java.vendor = Eclipse Adoptium\nos.arch = amd64\nsun.arch.data.model = 64\nopenjdk version \"21.0.3\" 2024-04-16"
+                    .to_string(),
+            )
+        };
+
+        // Without completeness marker, cached java.exe is treated as incomplete (must attempt fetch).
+        let res_no_marker = ensure_managed_java_with_probe(
+            &paths,
+            21,
+            None,
+            &http,
+            &dm,
+            |_| {},
+            Arc::clone(&cancel),
+            "http://127.0.0.1:9/catalog.json",
+            valid_probe,
+        )
+        .await;
+        assert!(res_no_marker.is_err());
+
+        launcher_storage::write_json_atomic(
+            &runtime_dir.join(".mse-java-complete.json"),
+            &ManagedJavaMarker {
+                component: component.to_string(),
+                major_version: 21,
+            },
+        )
+        .unwrap();
+
+        let cached = ensure_managed_java_with_probe(
+            &paths,
+            21,
+            None,
+            &http,
+            &dm,
+            |_| {},
+            cancel,
+            "http://127.0.0.1:9/catalog.json",
+            valid_probe,
+        )
+        .await
+        .expect("Marked valid managed Java must resolve from cache without network");
+        assert_eq!(cached.major_version, 21);
     }
 }

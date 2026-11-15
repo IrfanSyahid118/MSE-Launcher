@@ -133,8 +133,22 @@ impl ServerService {
     }
 
     fn read_servers_raw(file_path: &Path) -> Result<RawServerData, LauncherErrorPayload> {
-        if !file_path.exists() {
-            return Ok((HashMap::new(), Vec::new()));
+        match fs::symlink_metadata(file_path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(LauncherErrorPayload::invalid_input(
+                    "Target servers.dat tidak boleh berupa symlink.",
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((HashMap::new(), Vec::new()));
+            }
+            Err(e) => {
+                return Err(LauncherErrorPayload::file_system(format!(
+                    "Gagal memeriksa servers.dat: {}",
+                    e
+                )));
+            }
         }
 
         let bytes = fs::read(file_path).map_err(|e| {
@@ -279,11 +293,17 @@ impl ServerService {
         instance_id: &str,
         entry: InstanceServerEntry,
     ) -> Result<Vec<InstanceServerEntry>, LauncherErrorPayload> {
+        let target_ip = entry.ip.trim().to_string();
+        if target_ip.is_empty() {
+            return Err(LauncherErrorPayload::invalid_input(
+                "Alamat server (IP) tidak boleh kosong.",
+            ));
+        }
+
         let file_path = self.servers_file(instance_id)?;
         let (root, mut server_compounds) = Self::read_servers_raw(&file_path)?;
 
         let new_compound = Self::create_server_compound(&entry);
-        let target_ip = entry.ip.trim();
 
         if let Some(pos) = server_compounds.iter().position(|c| {
             c.get("ip")
@@ -291,7 +311,7 @@ impl ServerService {
                     NbtValue::String(s) => Some(s.as_str()),
                     _ => None,
                 })
-                .map(|s| s.eq_ignore_ascii_case(target_ip))
+                .map(|s| s.eq_ignore_ascii_case(&target_ip))
                 .unwrap_or(false)
         }) {
             server_compounds[pos] = new_compound;

@@ -432,6 +432,59 @@ pub fn validate_relative_symlink_target_within(
     Ok(())
 }
 
+/// Mengkanonisasi path meskipun ujungnya belum ada di disk dengan mengkanonisasi
+/// leluhur terdalam yang ada lalu menyambungkan sisa komponen relatifnya.
+pub fn canonicalize_with_tail(path: &Path) -> PathBuf {
+    if let Ok(canon) = dunce::canonicalize(path) {
+        return canon;
+    }
+
+    let mut tail_rev: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path;
+    while !cursor.exists() {
+        let Some(name) = cursor.file_name() else {
+            break;
+        };
+        tail_rev.push(name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            break;
+        };
+        cursor = parent;
+    }
+
+    let mut base = if cursor.exists() {
+        dunce::canonicalize(cursor).unwrap_or_else(|_| cursor.to_path_buf())
+    } else {
+        return path.to_path_buf();
+    };
+    for seg in tail_rev.into_iter().rev() {
+        base.push(seg);
+    }
+    base
+}
+
+fn ensure_disk_or_unix_path(
+    path: &Path,
+    reject_parent_dir: bool,
+) -> Result<(), LauncherErrorPayload> {
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir if reject_parent_dir => {
+                return Err(LauncherErrorPayload::invalid_input(
+                    "Path tidak boleh mengandung komponen '..'.",
+                ));
+            }
+            Component::Prefix(prefix) if !matches!(prefix.kind(), std::path::Prefix::Disk(_)) => {
+                return Err(LauncherErrorPayload::invalid_input(
+                    "Path UNC, Verbatim, atau device Windows tidak diizinkan.",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Memvalidasi path kandidat root data launcher (`MCLAUNCHER_DATA_ROOT` atau resolver env).
 pub fn validate_data_root_candidate(path: &Path) -> Result<(), LauncherErrorPayload> {
     let raw = path.to_string_lossy();
@@ -446,21 +499,7 @@ pub fn validate_data_root_candidate(path: &Path) -> Result<(), LauncherErrorPayl
         ));
     }
 
-    for comp in path.components() {
-        if let Component::Prefix(prefix) = comp {
-            match prefix.kind() {
-                std::path::Prefix::UNC(_, _)
-                | std::path::Prefix::VerbatimUNC(_, _)
-                | std::path::Prefix::DeviceNS(_)
-                | std::path::Prefix::Verbatim(_) => {
-                    return Err(LauncherErrorPayload::invalid_input(
-                        "Root data launcher tidak boleh menggunakan path UNC atau device Windows.",
-                    ));
-                }
-                _ => {}
-            }
-        }
-    }
+    ensure_disk_or_unix_path(path, true)?;
 
     if path.parent().is_none() {
         return Err(LauncherErrorPayload::invalid_input(
@@ -470,16 +509,39 @@ pub fn validate_data_root_candidate(path: &Path) -> Result<(), LauncherErrorPayl
 
     #[cfg(windows)]
     {
-        let normalized = raw
+        let resolved = canonicalize_with_tail(path);
+        ensure_disk_or_unix_path(&resolved, true)?;
+        let normalized = resolved
+            .to_string_lossy()
             .replace('/', "\\")
             .trim_end_matches('\\')
             .to_ascii_lowercase();
-        let sys_prefixes = [
-            "c:\\windows",
-            "c:\\program files",
-            "c:\\program files (x86)",
-            "c:\\programdata",
+
+        let mut sys_prefixes: Vec<String> = vec![
+            "c:\\windows".to_string(),
+            "c:\\program files".to_string(),
+            "c:\\program files (x86)".to_string(),
+            "c:\\programdata".to_string(),
         ];
+        for var in [
+            "SystemRoot",
+            "WINDIR",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramData",
+        ] {
+            if let Ok(val) = std::env::var(var) {
+                let norm = dunce::canonicalize(&val)
+                    .unwrap_or_else(|_| PathBuf::from(val))
+                    .to_string_lossy()
+                    .replace('/', "\\")
+                    .trim_end_matches('\\')
+                    .to_ascii_lowercase();
+                if !norm.is_empty() && !sys_prefixes.contains(&norm) {
+                    sys_prefixes.push(norm);
+                }
+            }
+        }
         for sys in sys_prefixes {
             if normalized == sys || normalized.starts_with(&format!("{}\\", sys)) {
                 return Err(LauncherErrorPayload::invalid_input(
@@ -513,6 +575,8 @@ pub fn validate_java_executable_path(path: &Path) -> Result<PathBuf, LauncherErr
             "Path executable Java harus absolut.",
         ));
     }
+    // Reject UNC/device/verbatim prefixes and traversal before canonicalize triggers SMB probes.
+    ensure_disk_or_unix_path(path, true)?;
 
     let check_java_name = |p: &Path| -> bool {
         let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
@@ -538,6 +602,7 @@ pub fn validate_java_executable_path(path: &Path) -> Result<PathBuf, LauncherErr
             e
         ))
     })?;
+    ensure_disk_or_unix_path(&canonical, true)?;
 
     if !check_java_name(&canonical) {
         return Err(LauncherErrorPayload::invalid_input(
@@ -638,7 +703,12 @@ pub fn slugify_instance_name(name: &str) -> String {
         }
     }
 
-    let trimmed = slug.trim_end_matches('-');
+    let capped = if slug.len() > 128 {
+        &slug[..128]
+    } else {
+        slug.as_str()
+    };
+    let trimmed = capped.trim_end_matches('-');
     if trimmed.is_empty() || is_windows_reserved_name(trimmed) {
         format!("instance-{}", uuid::Uuid::new_v4().simple())
     } else {
@@ -748,8 +818,22 @@ mod tests {
         {
             assert!(validate_data_root_candidate(Path::new("C:\\")).is_err());
             assert!(validate_data_root_candidate(Path::new("C:\\Windows\\Temp\\mc")).is_err());
+            assert!(
+                validate_data_root_candidate(Path::new("\\\\?\\C:\\Windows\\Temp\\mc")).is_err()
+            );
+            assert!(
+                validate_data_root_candidate(Path::new("C:\\Users\\test\\..\\Windows")).is_err()
+            );
+            assert!(
+                validate_java_executable_path(Path::new("\\\\attacker\\share\\java.exe")).is_err()
+            );
         }
         assert!(validate_data_root_candidate(&temp.path().join("mc-root")).is_ok());
+
+        let long_name = "a".repeat(200);
+        let slug = slugify_instance_name(&long_name);
+        assert!(slug.len() <= 128);
+        assert!(validate_instance_id(&slug).is_ok());
 
         let fake_cmd = temp.path().join("fake.cmd");
         fs::write(&fake_cmd, b"@echo off\r\n").unwrap();

@@ -24,9 +24,12 @@ use crate::quilt::{fetch_quilt_game_versions, fetch_quilt_loader_versions, fetch
 
 const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
+#[derive(Default)]
 struct SupportCache {
-    support: LoaderGameSupport,
-    fetched_at: Instant,
+    fabric: Option<(Vec<String>, Instant)>,
+    quilt: Option<(Vec<String>, Instant)>,
+    forge: Option<(Vec<String>, Instant)>,
+    neoforge: Option<(Vec<String>, Instant)>,
 }
 
 pub enum InstallerPlan {
@@ -265,27 +268,63 @@ pub async fn fetch_installer_profile(
     }
 }
 
+fn resolve_cli_java_path(path: &Path) -> Result<PathBuf, LauncherErrorPayload> {
+    let validated = launcher_security::validate_java_executable_path(path)?;
+    #[cfg(windows)]
+    if validated
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("javaw.exe"))
+    {
+        let sibling = validated.with_file_name("java.exe");
+        return launcher_security::validate_java_executable_path(&sibling).map_err(|_| {
+            LauncherErrorPayload::invalid_input(
+                "Installer memerlukan java.exe (konsol), namun java.exe pendamping tidak ditemukan.",
+            )
+        });
+    }
+    Ok(validated)
+}
+
 fn find_java_executable(paths: &DataPaths, preferred: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = preferred {
-        if let Ok(validated) = launcher_security::validate_java_executable_path(p) {
+        if let Ok(validated) = resolve_cli_java_path(p) {
             return Some(validated);
         }
     }
 
     let exe_name = if cfg!(windows) { "java.exe" } else { "java" };
 
-    if let Ok(entries) = std::fs::read_dir(&paths.runtimes_dir) {
-        for entry in entries.flatten() {
-            let bin_java = entry.path().join("bin").join(exe_name);
-            if let Ok(validated) = launcher_security::validate_java_executable_path(&bin_java) {
-                return Some(validated);
+    #[cfg(target_os = "windows")]
+    let platform_key = "windows-x64";
+    #[cfg(target_os = "linux")]
+    let platform_key = "linux";
+    #[cfg(target_os = "macos")]
+    let platform_key = "mac-os";
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    let platform_key = "linux";
+
+    let platform_dir = paths.runtimes_dir.join(platform_key);
+    for root in [&platform_dir, &paths.runtimes_dir] {
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                if !entry
+                    .file_type()
+                    .is_ok_and(|ft| ft.is_dir() && !ft.is_symlink())
+                {
+                    continue;
+                }
+                let bin_java = entry.path().join("bin").join(exe_name);
+                if let Ok(validated) = resolve_cli_java_path(&bin_java) {
+                    return Some(validated);
+                }
             }
         }
     }
 
     if let Ok(java_home) = std::env::var("JAVA_HOME") {
         let candidate = PathBuf::from(java_home).join("bin").join(exe_name);
-        if let Ok(validated) = launcher_security::validate_java_executable_path(&candidate) {
+        if let Ok(validated) = resolve_cli_java_path(&candidate) {
             return Some(validated);
         }
     }
@@ -293,7 +332,7 @@ fn find_java_executable(paths: &DataPaths, preferred: Option<&Path>) -> Option<P
     if let Some(path_var) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join(exe_name);
-            if let Ok(validated) = launcher_security::validate_java_executable_path(&candidate) {
+            if let Ok(validated) = resolve_cli_java_path(&candidate) {
                 return Some(validated);
             }
         }
@@ -307,9 +346,10 @@ async fn run_java_install_client(
     installer_jar: &Path,
     shared_dir: &Path,
 ) -> Result<(), LauncherErrorPayload> {
-    let validated_java = launcher_security::validate_java_executable_path(java_exe)?;
+    let validated_java = resolve_cli_java_path(java_exe)?;
     let mut cmd = tokio::process::Command::new(validated_java);
-    cmd.env_remove("JAVA_TOOL_OPTIONS")
+    cmd.kill_on_drop(true)
+        .env_remove("JAVA_TOOL_OPTIONS")
         .env_remove("_JAVA_OPTIONS")
         .env_remove("JDK_JAVA_OPTIONS")
         .env_remove("CLASSPATH")
@@ -365,7 +405,9 @@ pub struct LoaderService {
     paths: DataPaths,
     http: HttpClient,
     versions: VersionService,
-    support_cache: Arc<RwLock<Option<SupportCache>>>,
+    support_cache: Arc<RwLock<SupportCache>>,
+    profile_locks:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl LoaderService {
@@ -374,44 +416,100 @@ impl LoaderService {
             paths,
             http: HttpClient::new(),
             versions,
-            support_cache: Arc::new(RwLock::new(None)),
+            support_cache: Arc::new(RwLock::new(SupportCache::default())),
+            profile_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
-    pub async fn get_game_support(&self) -> Result<LoaderGameSupport, LauncherErrorPayload> {
-        {
-            let cache = self.support_cache.read().await;
-            if let Some(ref c) = *cache {
-                if c.fetched_at.elapsed() < CACHE_TTL {
-                    return Ok(c.support.clone());
-                }
-            }
-        }
+    fn profile_lock(&self, profile_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.profile_locks.lock().unwrap_or_else(|p| p.into_inner());
+        map.entry(profile_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
 
-        let fabric_fut = fetch_fabric_game_versions(&self.http);
-        let quilt_fut = fetch_quilt_game_versions(&self.http);
-        let forge_fut = fetch_forge_index(&self.http);
-        let neoforge_fut = fetch_neoforge_index(&self.http);
+    pub async fn get_game_support(&self) -> Result<LoaderGameSupport, LauncherErrorPayload> {
+        let (cached_fabric, cached_quilt, cached_forge, cached_neoforge) = {
+            let cache = self.support_cache.read().await;
+            let valid = |entry: &Option<(Vec<String>, Instant)>| {
+                entry
+                    .as_ref()
+                    .filter(|(_, ts)| ts.elapsed() < CACHE_TTL)
+                    .map(|(v, _)| v.clone())
+            };
+            (
+                valid(&cache.fabric),
+                valid(&cache.quilt),
+                valid(&cache.forge),
+                valid(&cache.neoforge),
+            )
+        };
+
+        let fabric_fut = async {
+            if cached_fabric.is_some() {
+                Ok(cached_fabric.clone())
+            } else {
+                fetch_fabric_game_versions(&self.http).await.map(Some)
+            }
+        };
+        let quilt_fut = async {
+            if cached_quilt.is_some() {
+                Ok(cached_quilt.clone())
+            } else {
+                fetch_quilt_game_versions(&self.http).await.map(Some)
+            }
+        };
+        let forge_fut = async {
+            if cached_forge.is_some() {
+                Ok(cached_forge.clone())
+            } else {
+                fetch_forge_index(&self.http)
+                    .await
+                    .map(|idx| Some(idx.game_versions))
+            }
+        };
+        let neoforge_fut = async {
+            if cached_neoforge.is_some() {
+                Ok(cached_neoforge.clone())
+            } else {
+                fetch_neoforge_index(&self.http)
+                    .await
+                    .map(|idx| Some(idx.game_versions))
+            }
+        };
 
         let (fabric_res, quilt_res, forge_res, neoforge_res) =
             tokio::join!(fabric_fut, quilt_fut, forge_fut, neoforge_fut);
 
-        let support = LoaderGameSupport {
-            fabric: fabric_res.ok(),
-            quilt: quilt_res.ok(),
-            forge: forge_res.ok().map(|idx| idx.game_versions),
-            neoforge: neoforge_res.ok().map(|idx| idx.game_versions),
-        };
-
-        {
-            let mut cache = self.support_cache.write().await;
-            *cache = Some(SupportCache {
-                support: support.clone(),
-                fetched_at: Instant::now(),
-            });
+        let now = Instant::now();
+        let mut cache = self.support_cache.write().await;
+        if cached_fabric.is_none() {
+            if let Ok(Some(ref list)) = fabric_res {
+                cache.fabric = Some((list.clone(), now));
+            }
+        }
+        if cached_quilt.is_none() {
+            if let Ok(Some(ref list)) = quilt_res {
+                cache.quilt = Some((list.clone(), now));
+            }
+        }
+        if cached_forge.is_none() {
+            if let Ok(Some(ref list)) = forge_res {
+                cache.forge = Some((list.clone(), now));
+            }
+        }
+        if cached_neoforge.is_none() {
+            if let Ok(Some(ref list)) = neoforge_res {
+                cache.neoforge = Some((list.clone(), now));
+            }
         }
 
-        Ok(support)
+        Ok(LoaderGameSupport {
+            fabric: fabric_res.ok().flatten(),
+            quilt: quilt_res.ok().flatten(),
+            forge: forge_res.ok().flatten(),
+            neoforge: neoforge_res.ok().flatten(),
+        })
     }
 
     pub async fn list_versions(
@@ -462,9 +560,10 @@ impl LoaderService {
         } else {
             let available = self.list_versions(loader_type, minecraft_version).await?;
             available
-                .into_iter()
+                .iter()
                 .find(|v| v.stable)
-                .map(|v| v.version)
+                .or_else(|| available.first())
+                .map(|v| v.version.clone())
                 .ok_or_else(|| {
                     LauncherErrorPayload::not_found(format!(
                         "Tidak ada versi {:?} yang tersedia untuk Minecraft {}.",
@@ -480,10 +579,16 @@ impl LoaderService {
             LoaderType::Fabric => {
                 let profile_id = format!("fabric-loader-{}-{}", chosen_version, minecraft_version);
                 launcher_security::validate_safe_single_component(&profile_id)?;
+                let lock = self.profile_lock(&profile_id);
+                let _guard = lock.lock().await;
                 let profile_dir =
                     launcher_security::safe_subpath(&self.paths.versions_dir, &profile_id)?;
                 let profile_file =
                     launcher_security::safe_subpath(&profile_dir, &format!("{profile_id}.json"))?;
+                launcher_security::ensure_descendants_no_symlink(
+                    &self.paths.versions_dir,
+                    &profile_file,
+                )?;
 
                 let profile = if profile_file.exists() {
                     match read_json_file::<LoaderProfile>(&profile_file)? {
@@ -495,7 +600,7 @@ impl LoaderService {
                                 &chosen_version,
                             )
                             .await?;
-                            let _ = write_json_atomic(&profile_file, &fresh);
+                            write_json_atomic(&profile_file, &fresh)?;
                             fresh
                         }
                     }
@@ -503,7 +608,7 @@ impl LoaderService {
                     let fresh =
                         fetch_fabric_profile(&self.http, minecraft_version, &chosen_version)
                             .await?;
-                    let _ = write_json_atomic(&profile_file, &fresh);
+                    write_json_atomic(&profile_file, &fresh)?;
                     fresh
                 };
 
@@ -512,10 +617,16 @@ impl LoaderService {
             LoaderType::Quilt => {
                 let profile_id = format!("quilt-loader-{}-{}", chosen_version, minecraft_version);
                 launcher_security::validate_safe_single_component(&profile_id)?;
+                let lock = self.profile_lock(&profile_id);
+                let _guard = lock.lock().await;
                 let profile_dir =
                     launcher_security::safe_subpath(&self.paths.versions_dir, &profile_id)?;
                 let profile_file =
                     launcher_security::safe_subpath(&profile_dir, &format!("{profile_id}.json"))?;
+                launcher_security::ensure_descendants_no_symlink(
+                    &self.paths.versions_dir,
+                    &profile_file,
+                )?;
 
                 let profile = if profile_file.exists() {
                     match read_json_file::<LoaderProfile>(&profile_file)? {
@@ -524,14 +635,14 @@ impl LoaderService {
                             let fresh =
                                 fetch_quilt_profile(&self.http, minecraft_version, &chosen_version)
                                     .await?;
-                            let _ = write_json_atomic(&profile_file, &fresh);
+                            write_json_atomic(&profile_file, &fresh)?;
                             fresh
                         }
                     }
                 } else {
                     let fresh =
                         fetch_quilt_profile(&self.http, minecraft_version, &chosen_version).await?;
-                    let _ = write_json_atomic(&profile_file, &fresh);
+                    write_json_atomic(&profile_file, &fresh)?;
                     fresh
                 };
 
@@ -548,12 +659,18 @@ impl LoaderService {
                     chosen_version
                 );
                 launcher_security::validate_safe_single_component(&profile_id)?;
+                let lock = self.profile_lock(&profile_id);
+                let _guard = lock.lock().await;
 
                 let profile_dir =
                     launcher_security::safe_subpath(&self.paths.versions_dir, &profile_id)?;
                 let profile_file =
                     launcher_security::safe_subpath(&profile_dir, &format!("{profile_id}.json"))?;
                 let marker_file = launcher_security::safe_subpath(&profile_dir, ".installer_done")?;
+                launcher_security::ensure_descendants_no_symlink(
+                    &self.paths.versions_dir,
+                    &profile_file,
+                )?;
 
                 let profile = if profile_file.exists() && marker_file.exists() {
                     match read_json_file::<LoaderProfile>(&profile_file)? {
@@ -870,9 +987,14 @@ impl LoaderService {
             }
         };
 
-        let _ = write_json_atomic(&profile_file, &resolved_profile);
-        let _ = launcher_security::ensure_dir_within(&self.paths.versions_dir, &profile_dir, false);
-        let _ = std::fs::write(&marker_file, b"ok");
+        launcher_security::ensure_dir_within(&self.paths.versions_dir, &profile_dir, false)?;
+        write_json_atomic(&profile_file, &resolved_profile)?;
+        std::fs::write(&marker_file, b"ok").map_err(|e| {
+            LauncherErrorPayload::file_system(format!(
+                "Gagal menulis penanda instalasi loader: {}",
+                e
+            ))
+        })?;
         Ok(resolved_profile)
     }
 }
@@ -888,5 +1010,49 @@ mod ps_tests {
         assert!(maven_coord_to_rel_path("com..evil:mod:1.0").is_err());
         assert!(maven_coord_to_rel_path("com.evil:mod:1.0@exe/evil").is_err());
         assert!(maven_coord_to_rel_path("com.evil:CON:1.0").is_err());
+    }
+
+    #[test]
+    fn test_h12_find_java_scans_platform_subdir_and_neoforge_26_versioning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = super::DataPaths::new(tmp.path());
+
+        #[cfg(target_os = "windows")]
+        let (platform_key, exe_name) = ("windows-x64", "java.exe");
+        #[cfg(not(target_os = "windows"))]
+        let (platform_key, exe_name) = ("linux", "java");
+
+        let bin_dir = paths
+            .runtimes_dir
+            .join(platform_key)
+            .join("java-runtime-delta")
+            .join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let java_exe = bin_dir.join(exe_name);
+        std::fs::write(&java_exe, b"stub").unwrap();
+
+        let found = super::find_java_executable(&paths, None).expect("must find nested runtime");
+        assert!(found.ends_with(exe_name));
+
+        #[cfg(windows)]
+        {
+            let javaw_exe = bin_dir.join("javaw.exe");
+            std::fs::write(&javaw_exe, b"stub").unwrap();
+            let cli = super::resolve_cli_java_path(&javaw_exe).unwrap();
+            assert_eq!(cli.file_name().and_then(|s| s.to_str()), Some("java.exe"));
+        }
+
+        assert_eq!(
+            crate::neoforge::neoforge_to_game_version("21.1.72").as_deref(),
+            Some("1.21.1")
+        );
+        assert_eq!(
+            crate::neoforge::neoforge_to_game_version("26.1.0-beta").as_deref(),
+            Some("26.1")
+        );
+        assert_ne!(
+            crate::merge::library_key("com.example:asset:1.0@zip"),
+            crate::merge::library_key("com.example:asset:1.0@jar")
+        );
     }
 }

@@ -89,8 +89,13 @@ export function useUpdateInstance() {
   const queryClient = useQueryClient()
   return useMutation<void, unknown, Instance>({
     mutationFn: (instance) => invoke('instances:update', instance),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+    onSuccess: async (_, instance) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.instances }),
+        queryClient.invalidateQueries({ queryKey: ['content', 'updates', instance.id] }),
+        queryClient.invalidateQueries({ queryKey: [...queryKeys.contentWorlds, instance.id] }),
+        queryClient.invalidateQueries({ queryKey: ['servers', instance.id] }),
+      ])
     },
   })
 }
@@ -99,7 +104,10 @@ export function useRemoveInstance() {
   const queryClient = useQueryClient()
   return useMutation<void, unknown, string>({
     mutationFn: (id) => invoke('instances:remove', { id }),
-    onSuccess: async () => {
+    onSuccess: async (_, id) => {
+      queryClient.removeQueries({ queryKey: ['content', 'updates', id] })
+      queryClient.removeQueries({ queryKey: [...queryKeys.contentWorlds, id] })
+      queryClient.removeQueries({ queryKey: ['servers', id] })
       await queryClient.invalidateQueries({ queryKey: queryKeys.instances })
     },
   })
@@ -270,7 +278,7 @@ export function useBeginMicrosoftLogin() {
 
 export function useCompleteMicrosoftLogin() {
   const queryClient = useQueryClient()
-  return useMutation<Account, unknown, DeviceCodeInfo>({
+  return useMutation<Account, unknown, DeviceCodeInfo & { taskId?: string | undefined }>({
     mutationFn: (code) => invoke('auth:completeMicrosoft', code),
     onSuccess: async () => {
       await Promise.all([
@@ -339,14 +347,16 @@ export function useContentPlan(
   instanceId: string | null,
   provider: ContentProviderId,
   versionId: string | null,
+  worldId?: string | null,
 ) {
   return useQuery<ContentInstallPlan>({
-    queryKey: [...queryKeys.contentPlan, instanceId, provider, versionId],
+    queryKey: [...queryKeys.contentPlan, instanceId, provider, versionId, worldId ?? null],
     queryFn: () =>
       invoke('content:plan', {
         instanceId: instanceId as string,
         provider,
         versionId: versionId as string,
+        ...(worldId ? { worldId } : {}),
       }),
     enabled: instanceId !== null && versionId !== null,
     staleTime: 5 * 60_000,
@@ -376,8 +386,12 @@ export function useInstallContent() {
     }
   >({
     mutationFn: (req) => invoke('content:install', req),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+    onSuccess: async (_, req) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.instances }),
+        queryClient.invalidateQueries({ queryKey: ['content', 'updates', req.instanceId] }),
+        queryClient.invalidateQueries({ queryKey: [...queryKeys.contentWorlds, req.instanceId] }),
+      ])
     },
   })
 }
@@ -390,8 +404,10 @@ export function useRemoveContent() {
     { instanceId: string; provider: ContentProviderId; projectId: string }
   >({
     mutationFn: (req) => invoke('content:remove', req),
-    onSuccess: () => {
+    onSuccess: (_, req) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+      void queryClient.invalidateQueries({ queryKey: ['content', 'updates', req.instanceId] })
+      void queryClient.invalidateQueries({ queryKey: [...queryKeys.contentWorlds, req.instanceId] })
     },
   })
 }
@@ -404,8 +420,10 @@ export function useToggleContent() {
     { instanceId: string; provider: ContentProviderId; projectId: string; enabled: boolean }
   >({
     mutationFn: (req) => invoke('content:toggle', req),
-    onSuccess: () => {
+    onSuccess: (_, req) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+      void queryClient.invalidateQueries({ queryKey: ['content', 'updates', req.instanceId] })
+      void queryClient.invalidateQueries({ queryKey: [...queryKeys.contentWorlds, req.instanceId] })
     },
   })
 }

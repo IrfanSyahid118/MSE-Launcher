@@ -140,7 +140,7 @@ pub fn extract_zip_with_limit(
             let folded_key = format!(
                 "{}:{}",
                 if is_dir_entry { "D" } else { "F" },
-                trimmed_rel.to_ascii_lowercase()
+                trimmed_rel.to_lowercase()
             );
             if !is_dir_entry && !seen_case_folded.insert(folded_key) {
                 return Err(LauncherErrorPayload::invalid_input(format!(
@@ -150,8 +150,8 @@ pub fn extract_zip_with_limit(
             }
 
             let _ = enclosed_name;
-            let target_path = destination.join(safe_rel.as_path());
-            launcher_security::ensure_descendants_no_symlink(destination, &target_path)?;
+            let target_path = canonical_dest.join(safe_rel.as_path());
+            launcher_security::ensure_descendants_no_symlink(&canonical_dest, &target_path)?;
 
             if is_dir_entry {
                 fs::create_dir_all(&target_path).map_err(|e| {
@@ -178,7 +178,7 @@ pub fn extract_zip_with_limit(
                     })?;
                 }
 
-                launcher_security::ensure_descendants_no_symlink(destination, parent)?;
+                launcher_security::ensure_descendants_no_symlink(&canonical_dest, parent)?;
                 if !launcher_security::canonical_starts_with(parent, &canonical_dest)? {
                     return Err(LauncherErrorPayload::invalid_input(
                         "Pelanggaran isolasi direktori: entri berada di luar direktori tujuan.",
@@ -201,10 +201,14 @@ pub fn extract_zip_with_limit(
                     launcher_security::safe_remove_file_within(&canonical_dest, &target_path)?;
                 }
 
-                let mut out_file = launcher_security::safe_create_new_file(&target_path, false)?;
-
-                let mut limited = (&mut entry).take(remaining_bytes.saturating_add(1));
-                let copied = io::copy(&mut limited, &mut out_file).map_err(|e| {
+                let copied = {
+                    let mut out_file =
+                        launcher_security::safe_create_new_file(&target_path, false)?;
+                    let mut limited = (&mut entry).take(remaining_bytes.saturating_add(1));
+                    io::copy(&mut limited, &mut out_file)
+                }
+                .map_err(|e| {
+                    let _ = fs::remove_file(&target_path);
                     LauncherErrorPayload::file_system(format!("Gagal mengekstrak isi entri: {}", e))
                 })?;
 
@@ -239,9 +243,11 @@ pub fn extract_zip_with_limit(
             fn prune_empty_subdirs(dir: &Path, base: &Path) {
                 if let Ok(entries) = fs::read_dir(dir) {
                     for entry in entries.flatten() {
-                        let p = entry.path();
-                        if p.is_dir() {
-                            prune_empty_subdirs(&p, base);
+                        let Ok(ft) = entry.file_type() else {
+                            continue;
+                        };
+                        if ft.is_dir() {
+                            prune_empty_subdirs(&entry.path(), base);
                         }
                     }
                 }
@@ -249,7 +255,7 @@ pub fn extract_zip_with_limit(
                     let _ = fs::remove_dir(dir);
                 }
             }
-            prune_empty_subdirs(destination, destination);
+            prune_empty_subdirs(&canonical_dest, &canonical_dest);
             Err(e)
         }
     }
@@ -476,5 +482,26 @@ mod tests {
 
         assert!(extract_zip(&zip_path, &dest_dir, &[]).is_err());
         assert!(!outside.join("pwn.txt").exists());
+    }
+
+    #[test]
+    fn test_h3_activate_resourcepack_appends_after_vanilla_and_handles_bad_brackets() {
+        let temp_dir = tempdir().unwrap();
+        let options_file = temp_dir.path().join("options.txt");
+        std::fs::write(&options_file, "resourcePacks:[\"vanilla\"]\n").unwrap();
+        activate_resourcepack_in_options(&options_file, "SkinPack.zip").unwrap();
+        let updated = std::fs::read_to_string(&options_file).unwrap();
+        assert!(updated.contains("resourcePacks:[\"vanilla\",\"file/SkinPack.zip\"]"));
+
+        let fresh_options = temp_dir.path().join("fresh_options.txt");
+        activate_resourcepack_in_options(&fresh_options, "SkinPack.zip").unwrap();
+        let fresh = std::fs::read_to_string(&fresh_options).unwrap();
+        assert!(fresh.contains("resourcePacks:[\"vanilla\",\"file/SkinPack.zip\"]"));
+
+        let malformed = temp_dir.path().join("malformed_options.txt");
+        std::fs::write(&malformed, "resourcePacks:][\n").unwrap();
+        activate_resourcepack_in_options(&malformed, "SkinPack.zip").unwrap();
+        let repaired = std::fs::read_to_string(&malformed).unwrap();
+        assert!(repaired.contains("resourcePacks:[\"file/SkinPack.zip\"]"));
     }
 }

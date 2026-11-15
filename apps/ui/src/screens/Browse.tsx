@@ -19,6 +19,7 @@ import type {
 } from '@mc/shared'
 import { compareMinecraftVersions } from '@mc/shared'
 import { useI18n } from '../i18n'
+import type { MessageKey } from '../i18n'
 import { errorMessage, invoke } from '../api/launcher'
 import {
   useContentProject,
@@ -36,21 +37,21 @@ import styles from './Browse.module.css'
 const SEARCH_DEBOUNCE_MS = 300
 const PROJECT_VERSIONS_PER_PAGE = 10
 
-const CATEGORY_TABS: { id: ContentType; label: string; noun: string }[] = [
-  { id: 'modpack', label: 'Modpacks', noun: 'modpacks' },
-  { id: 'mod', label: 'Mods', noun: 'mods' },
-  { id: 'resourcepack', label: 'Resource Packs', noun: 'resource packs' },
-  { id: 'datapack', label: 'Data Packs', noun: 'data packs' },
-  { id: 'shader', label: 'Shaders', noun: 'shaders' },
-  { id: 'world', label: 'Worlds', noun: 'worlds' },
+const CATEGORY_TABS: { id: ContentType; labelKey: MessageKey }[] = [
+  { id: 'modpack', labelKey: 'browse.tab.modpack' },
+  { id: 'mod', labelKey: 'browse.tab.mod' },
+  { id: 'resourcepack', labelKey: 'browse.tab.resourcepack' },
+  { id: 'datapack', labelKey: 'browse.tab.datapack' },
+  { id: 'shader', labelKey: 'browse.tab.shader' },
+  { id: 'world', labelKey: 'browse.tab.world' },
 ]
 
-const SORT_OPTIONS: { id: ContentSort; label: string }[] = [
-  { id: 'relevance', label: 'Relevance' },
-  { id: 'downloads', label: 'Downloads' },
-  { id: 'follows', label: 'Follows' },
-  { id: 'updated', label: 'Updated' },
-  { id: 'newest', label: 'Newest' },
+const SORT_OPTIONS: { id: ContentSort; labelKey: MessageKey }[] = [
+  { id: 'relevance', labelKey: 'browse.sort.relevance' },
+  { id: 'downloads', labelKey: 'browse.sort.downloads' },
+  { id: 'follows', labelKey: 'browse.sort.follows' },
+  { id: 'updated', labelKey: 'browse.sort.updated' },
+  { id: 'newest', labelKey: 'browse.sort.newest' },
 ]
 
 const PAGE_SIZES = [20, 50, 100]
@@ -77,13 +78,13 @@ function projectExternalUrl(provider: ContentProviderId, type: ContentType, slug
   return `https://www.curseforge.com/minecraft/${CURSEFORGE_SECTION[type]}/${safeSlug}`
 }
 
-const TYPE_LABEL: Record<ContentType, string> = {
-  modpack: 'Modpack',
-  mod: 'Mod',
-  resourcepack: 'Resource Pack',
-  datapack: 'Data Pack',
-  shader: 'Shader',
-  world: 'World',
+const TYPE_LABEL_KEY: Record<ContentType, MessageKey> = {
+  modpack: 'browse.modpackBadge',
+  mod: 'browse.tab.mod',
+  resourcepack: 'browse.tab.resourcepack',
+  datapack: 'browse.tab.datapack',
+  shader: 'browse.tab.shader',
+  world: 'browse.tab.world',
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -180,10 +181,11 @@ function parseProjectBody(body: string): BodyBlock[] {
 }
 
 function ProjectBody({ body }: { body: string }): ReactNode {
+  const { t } = useI18n()
   const blocks = useMemo(() => parseProjectBody(body), [body])
 
   if (blocks.length === 0) {
-    return <p className={styles.bodyText}>This project has no description yet.</p>
+    return <p className={styles.bodyText}>{t('browse.noDescriptionYet')}</p>
   }
 
   return (
@@ -256,6 +258,12 @@ export function Browse(): ReactNode {
   const [versionPage, setVersionPage] = useState(1)
 
   const [installDialogItem, setInstallDialogItem] = useState<ContentProjectSummary | null>(null)
+  const [installDialogVersionId, setInstallDialogVersionId] = useState<string | null>(null)
+
+  const openInstallDialog = (item: ContentProjectSummary, versionId: string | null = null): void => {
+    setInstallDialogVersionId(versionId)
+    setInstallDialogItem(item)
+  }
 
   const debouncedText = useDebouncedValue(text.trim(), SEARCH_DEBOUNCE_MS)
   const selectedInstanceId = useAppStore((state) => state.selectedInstanceId)
@@ -449,13 +457,13 @@ export function Browse(): ReactNode {
   const pager = (current: number, totalCount: number, onChange: (next: number) => void): ReactNode => {
     if (totalCount <= 1) return null
     return (
-      <nav className={styles.pager} aria-label="Pagination">
+      <nav className={styles.pager} aria-label={t('browse.paginationAria')}>
         <button
           type="button"
           className={styles.pagerArrow}
           onClick={() => onChange(Math.max(1, current - 1))}
           disabled={current === 1}
-          aria-label="Previous page"
+          aria-label={t('browse.prevPage')}
         >
           <ChevronLeft size={15} aria-hidden />
         </button>
@@ -481,13 +489,15 @@ export function Browse(): ReactNode {
           className={styles.pagerArrow}
           onClick={() => onChange(Math.min(totalCount, current + 1))}
           disabled={current === totalCount}
-          aria-label="Next page"
+          aria-label={t('browse.nextPage')}
         >
           <ChevronRight size={15} aria-hidden />
         </button>
       </nav>
     )
   }
+
+  const activeTabLabel = t(CATEGORY_TABS.find((tab) => tab.id === activeTab)?.labelKey ?? 'browse.tab.mod')
 
   return (
     <div className={styles.page} data-testid="browse-screen">
@@ -496,7 +506,7 @@ export function Browse(): ReactNode {
           {!activeProject ? (
             <>
               <div className={styles.topRow}>
-                <div className={styles.tabs} role="tablist" aria-label="Content type">
+                <div className={styles.tabs} role="tablist" aria-label={t('browse.contentTypeAria')}>
                   {CATEGORY_TABS.map((tab) => {
                     const isActive = activeTab === tab.id
                     return (
@@ -512,13 +522,13 @@ export function Browse(): ReactNode {
                           setCategories([])
                         }}
                       >
-                        {tab.label}
+                        {t(tab.labelKey)}
                       </button>
                     )
                   })}
                 </div>
 
-                <div className={styles.providerPills} role="group" aria-label="Content provider">
+                <div className={styles.providerPills} role="group" aria-label={t('browse.contentProviderAria')}>
                   {(['modrinth', 'curseforge'] as ContentProviderId[]).map((id) => (
                     <button
                       key={id}
@@ -539,12 +549,12 @@ export function Browse(): ReactNode {
                 <input
                   type="text"
                   className={styles.searchBarInput}
-                  placeholder={`Search ${CATEGORY_TABS.find((tab) => tab.id === activeTab)?.noun ?? 'content'}...`}
+                  placeholder={t('browse.searchTypePlaceholder', { noun: activeTabLabel.toLowerCase() })}
                   value={text}
                   disabled={Boolean(isBlocked)}
                   onChange={(event) => setText(event.target.value)}
                   data-testid="browse-search-input"
-                  aria-label="Search content"
+                  aria-label={t('browse.searchContentAria')}
                 />
               </div>
 
@@ -569,7 +579,7 @@ export function Browse(): ReactNode {
                   ) : null}
 
                   <label className={styles.controlLabel}>
-                    <span>Sort by</span>
+                    <span>{t('browse.sortLabel')}</span>
                     <select
                       className={styles.select}
                       value={sort}
@@ -577,14 +587,14 @@ export function Browse(): ReactNode {
                     >
                       {SORT_OPTIONS.map((option) => (
                         <option key={option.id} value={option.id}>
-                          {option.label}
+                          {t(option.labelKey)}
                         </option>
                       ))}
                     </select>
                   </label>
 
                   <label className={styles.controlLabel}>
-                    <span>View</span>
+                    <span>{t('browse.viewLabel')}</span>
                     <select
                       className={styles.select}
                       value={pageSize}
@@ -624,11 +634,11 @@ export function Browse(): ReactNode {
                     </div>
                   ) : items.length === 0 ? (
                     <div className={styles.notice}>
-                      <h2>No {CATEGORY_TABS.find((tab) => tab.id === activeTab)?.noun} found</h2>
+                      <h2>{t('browse.noResultsForTab', { noun: activeTabLabel.toLowerCase() })}</h2>
                       <p>
                         {categories.length > 0 || text.trim()
-                          ? 'Try another keyword or clear the filters.'
-                          : 'Nothing matches this view yet.'}
+                          ? t('browse.tryAnotherKeyword')
+                          : t('browse.nothingMatches')}
                       </p>
                       {categories.length > 0 ? (
                         <button
@@ -636,7 +646,7 @@ export function Browse(): ReactNode {
                           className={styles.secondaryButton}
                           onClick={() => setCategories([])}
                         >
-                          Clear category filters
+                          {t('browse.clearCategoryFilters')}
                         </button>
                       ) : null}
                     </div>
@@ -675,7 +685,7 @@ export function Browse(): ReactNode {
                               </div>
                               <p className={styles.rowDescription}>{item.description}</p>
                               <div className={styles.rowTags}>
-                                <span className={styles.tagMuted}>{TYPE_LABEL[item.type]}</span>
+                                <span className={styles.tagMuted}>{t(TYPE_LABEL_KEY[item.type])}</span>
                                 <span className={styles.tagMuted}>{PROVIDER_LABEL[item.provider]}</span>
                                 {installed ? (
                                   <span className={styles.tagInstalled}>
@@ -689,7 +699,7 @@ export function Browse(): ReactNode {
                               <button
                                 type="button"
                                 className={styles.installButton}
-                                onClick={() => setInstallDialogItem(item)}
+                                onClick={() => openInstallDialog(item)}
                                 disabled={blocked}
                                 title={blocked ? t('browse.createInstanceFirst') : undefined}
                                 data-testid="content-install-button"
@@ -719,7 +729,7 @@ export function Browse(): ReactNode {
                 onClick={() => setActiveVersion(null)}
               >
                 <ArrowLeft size={14} aria-hidden />
-                <span>All versions</span>
+                <span>{t('browse.allVersions')}</span>
               </button>
 
               <div className={styles.versionHeader}>
@@ -734,7 +744,7 @@ export function Browse(): ReactNode {
                 <div className={styles.versionMeta}>
                   <span>
                     {activeVersion.gameVersions[0] ?? 'Minecraft'} ·{' '}
-                    {relativeTime(activeVersion.publishedAt) ?? 'unknown date'}
+                    {relativeTime(activeVersion.publishedAt) ?? t('common.unknown')}
                   </span>
                   <span className={styles.metaDot}>•</span>
                   <span>
@@ -745,22 +755,22 @@ export function Browse(): ReactNode {
                 <button
                   type="button"
                   className={styles.primaryButton}
-                  onClick={() => setInstallDialogItem(activeProject)}
+                  onClick={() => openInstallDialog(activeProject, activeVersion.id)}
                   disabled={activeVersion.downloadUrl === null}
                   title={
                     activeVersion.downloadUrl === null
-                      ? 'This provider does not allow third-party downloads'
+                      ? t('browse.thirdPartyBlocked')
                       : undefined
                   }
                 >
                   <Download size={14} aria-hidden />
-                  <span>Install</span>
+                  <span>{t('browse.install')}</span>
                 </button>
               </div>
 
               <div className={styles.infoGrid}>
                 <section className={styles.infoCard}>
-                  <h2 className={styles.infoTitle}>Compatibility</h2>
+                  <h2 className={styles.infoTitle}>{t('browse.compatibility')}</h2>
                   <span className={styles.infoLabel}>Minecraft: Java Edition</span>
                   <div className={styles.chips}>
                     {activeVersion.gameVersions.map((value) => (
@@ -769,7 +779,7 @@ export function Browse(): ReactNode {
                       </span>
                     ))}
                   </div>
-                  <span className={styles.infoLabel}>Platform</span>
+                  <span className={styles.infoLabel}>{t('browse.platforms')}</span>
                   <div className={styles.chips}>
                     {activeVersion.loaders.map((value) => (
                       <span key={value} className={styles.chip}>
@@ -780,12 +790,12 @@ export function Browse(): ReactNode {
                 </section>
 
                 <section className={styles.infoCard}>
-                  <h2 className={styles.infoTitle}>File</h2>
-                  <span className={styles.infoLabel}>Name</span>
+                  <h2 className={styles.infoTitle}>{t('browse.fileSection')}</h2>
+                  <span className={styles.infoLabel}>{t('browse.fileName')}</span>
                   <span className={styles.fileName}>{activeVersion.fileName}</span>
-                  <span className={styles.infoLabel}>Checksum</span>
+                  <span className={styles.infoLabel}>{t('browse.checksum')}</span>
                   <span className={styles.fileName}>
-                    {activeVersion.sha1 ? `SHA-1 ${activeVersion.sha1.slice(0, 16)}…` : 'Not provided'}
+                    {activeVersion.sha1 ? `SHA-1 ${activeVersion.sha1.slice(0, 16)}…` : t('browse.notProvided')}
                   </span>
                 </section>
               </div>
@@ -825,7 +835,7 @@ export function Browse(): ReactNode {
                         <span>{t('browse.updatedAt', { time: relativeTime(latestPublished) ?? '' })}</span>
                       </>
                     ) : null}
-                    <span className={styles.tagMuted}>{TYPE_LABEL[activeProject.type]}</span>
+                    <span className={styles.tagMuted}>{t(TYPE_LABEL_KEY[activeProject.type])}</span>
                     <span className={styles.tagMuted}>
                       {PROVIDER_LABEL[activeProject.provider]}
                     </span>
@@ -840,7 +850,7 @@ export function Browse(): ReactNode {
                 <button
                   type="button"
                   className={styles.primaryButton}
-                  onClick={() => setInstallDialogItem(activeProject)}
+                  onClick={() => openInstallDialog(activeProject)}
                   disabled={needsInstance(activeProject)}
                   title={needsInstance(activeProject) ? t('browse.createInstanceFirst') : undefined}
                 >
@@ -849,7 +859,7 @@ export function Browse(): ReactNode {
                 </button>
               </header>
 
-              <div className={styles.projectTabs} role="tablist" aria-label="Project sections">
+              <div className={styles.projectTabs} role="tablist" aria-label={t('browse.projectSectionsAria')}>
                 {(
                   [
                     { id: 'description', label: t('browse.tabDescription') },
@@ -917,7 +927,7 @@ export function Browse(): ReactNode {
                   <div className={styles.versionsToolbar}>
                     <div className={styles.versionsFilters}>
                       <label className={styles.controlLabel}>
-                        <span>Channel</span>
+                        <span>{t('browse.channel')}</span>
                         <select
                           className={styles.select}
                           value={channel}
@@ -925,21 +935,21 @@ export function Browse(): ReactNode {
                             setChannel(event.target.value as typeof channel)
                           }
                         >
-                          <option value="all">All</option>
-                          <option value="release">Release</option>
-                          <option value="beta">Beta</option>
-                          <option value="alpha">Alpha</option>
+                          <option value="all">{t('browse.channelAll')}</option>
+                          <option value="release">{t('browse.channelRelease')}</option>
+                          <option value="beta">{t('browse.channelBeta')}</option>
+                          <option value="alpha">{t('browse.channelAlpha')}</option>
                         </select>
                       </label>
 
                       <label className={styles.controlLabel}>
-                        <span>Game version</span>
+                        <span>{t('browse.gameVersion')}</span>
                         <select
                           className={styles.select}
                           value={gameVersion}
                           onChange={(event) => setGameVersion(event.target.value)}
                         >
-                          <option value="all">All</option>
+                          <option value="all">{t('browse.channelAll')}</option>
                           {gameVersionOptions.map((value) => (
                             <option key={value} value={value}>
                               {value}
@@ -971,21 +981,21 @@ export function Browse(): ReactNode {
                     </div>
                   ) : versions.length === 0 ? (
                     <div className={styles.notice}>
-                      <h2>No versions match these filters</h2>
-                      <p>Pick another channel or game version.</p>
+                      <h2>{t('browse.noVersionsMatch')}</h2>
+                      <p>{t('browse.pickAnotherFilter')}</p>
                     </div>
                   ) : (
                     <div className={styles.tableWrap}>
                       <table className={styles.table}>
                         <thead>
                           <tr>
-                            <th scope="col">Version</th>
-                            <th scope="col">Game version</th>
-                            <th scope="col">Platform</th>
-                            <th scope="col">Published</th>
-                            <th scope="col">Downloads</th>
+                            <th scope="col">{t('browse.tableVersion')}</th>
+                            <th scope="col">{t('browse.gameVersion')}</th>
+                            <th scope="col">{t('browse.platforms')}</th>
+                            <th scope="col">{t('browse.tablePublished')}</th>
+                            <th scope="col">{t('browse.tableDownloads')}</th>
                             <th scope="col" className={styles.alignEnd}>
-                              Actions
+                              {t('browse.tableActions')}
                             </th>
                           </tr>
                         </thead>
@@ -1009,25 +1019,25 @@ export function Browse(): ReactNode {
                               </td>
                               <td>
                                 <span className={styles.chip}>
-                                  {version.gameVersions[0] ?? '—'}
+                                  {version.gameVersions[0] ?? '-'}
                                 </span>
                               </td>
                               <td>
                                 <span className={styles.chip}>
-                                  {version.loaders[0] ?? '—'}
+                                  {version.loaders[0] ?? '-'}
                                 </span>
                               </td>
                               <td className={styles.mutedCell}>
-                                {relativeTime(version.publishedAt) ?? '—'}
+                                {relativeTime(version.publishedAt) ?? '-'}
                               </td>
                               <td className={styles.mutedCell}>{formatCount(version.downloads)}</td>
                               <td className={styles.alignEnd}>
                                 <button
                                   type="button"
                                   className={styles.iconButton}
-                                  onClick={() => setInstallDialogItem(activeProject)}
-                                  aria-label={`Install ${version.name}`}
-                                  title="Install this version"
+                                  onClick={() => openInstallDialog(activeProject, version.id)}
+                                  aria-label={t('browse.installVersionAria', { name: version.name })}
+                                  title={t('browse.installThisVersion')}
                                 >
                                   <Download size={14} aria-hidden />
                                 </button>
@@ -1058,10 +1068,14 @@ export function Browse(): ReactNode {
         <ContentInstallDialog
           open
           onOpenChange={(next) => {
-            if (!next) setInstallDialogItem(null)
+            if (!next) {
+              setInstallDialogItem(null)
+              setInstallDialogVersionId(null)
+            }
           }}
           project={installDialogItem}
           instance={instance}
+          initialVersionId={installDialogVersionId}
         />
       ) : null}
     </div>

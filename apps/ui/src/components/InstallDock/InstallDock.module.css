@@ -3,12 +3,12 @@
   left: 50%;
   bottom: 18px;
   transform: translateX(-50%);
-  z-index: 95;
+  z-index: 50;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 7px;
-  width: min(420px, calc(100vw - 48px));
+  width: min(460px, calc(100vw - 32px));
   pointer-events: none;
 }
 
@@ -122,6 +122,63 @@
   border-radius: inherit;
   background: linear-gradient(90deg, var(--color-green), var(--accent-light));
   transition: width var(--dur-base) var(--ease-out);
+}
+
+.console {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 76px;
+  padding: 6px 9px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--divider);
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.console::-webkit-scrollbar {
+  width: 5px;
+}
+
+.console::-webkit-scrollbar-thumb {
+  border-radius: var(--radius-pill);
+  background: var(--scrollbar-thumb);
+}
+
+.consoleLine {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-tertiary);
+}
+
+.consoleLineActive {
+  color: var(--text-primary);
+}
+
+.consolePrompt {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.consoleLineActive .consolePrompt {
+  color: var(--color-brand-highlight);
+  font-weight: 700;
+}
+
+.consoleText {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hintRow {

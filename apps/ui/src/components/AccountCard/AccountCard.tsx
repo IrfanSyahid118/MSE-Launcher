@@ -1,16 +1,15 @@
 import { useRef, useState } from 'react'
-import type { ChangeEvent, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { ChevronDown, Plus, Upload, UserRound } from 'lucide-react'
 import { motion } from 'motion/react'
 import type { Account, Instance, MemoryInfo, MinecraftVersionInfo, Settings } from '@mc/shared'
 import { useI18n } from '../../i18n'
-import { useAppStore } from '../../stores/app-store'
 import { AccountDialog } from '../AccountDialog/AccountDialog'
 import { AccountMenu } from '../AccountMenu/AccountMenu'
 import { GlassButton } from '../GlassButton/GlassButton'
 import { MinecraftSkin3D } from '../MinecraftSkin/MinecraftSkin3D'
-import { useActiveSkin } from '../MinecraftSkin/useActiveSkin'
+import { useActiveSkin, useSelectSkinType, useUploadAccountSkin } from '../MinecraftSkin/useActiveSkin'
 import { ProgressBar } from '../ProgressBar/ProgressBar'
 import styles from './AccountCard.module.css'
 
@@ -33,9 +32,8 @@ export function AccountCard({ account, instance, version, settings, memory }: Ac
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const activeSkin = useActiveSkin(account)
-  const setSelectedSkin = useAppStore((state) => state.setSelectedSkin)
-  const setSelectedSkinType = useAppStore((state) => state.setSelectedSkinType)
-  const setCustomSkinUrl = useAppStore((state) => state.setCustomSkinUrl)
+  const selectSkinType = useSelectSkinType(account)
+  const handleFileUpload = useUploadAccountSkin(account, activeSkin.isSlim)
 
   const maxMb = settings.memory.defaultMaxMb
   const totalMb = memory?.totalMb ?? null
@@ -43,20 +41,6 @@ export function AccountCard({ account, instance, version, settings, memory }: Ac
   const ready = Boolean(account) && Boolean(instance) && Boolean(version?.installed)
 
   const isExpired = account?.type === 'microsoft' && account.expiresAt && new Date(account.expiresAt) < new Date()
-
-  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>): void => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result
-      if (typeof dataUrl === 'string') {
-        setCustomSkinUrl(dataUrl)
-        setSelectedSkinType('custom')
-      }
-    }
-    reader.readAsDataURL(file)
-  }
 
   const accountPill = (
     <span className={styles.typePill}>
@@ -106,7 +90,7 @@ export function AccountCard({ account, instance, version, settings, memory }: Ac
                 className={`${styles.skinPillBtn} ${activeSkin.skinType === 'microsoft' ? styles.skinPillBtnActive : ''}`}
                 role="radio"
                 aria-checked={activeSkin.skinType === 'microsoft'}
-                onClick={() => setSelectedSkinType('microsoft')}
+                onClick={() => selectSkinType('microsoft')}
                 title={t('account.skin.microsoft')}
               >
                 {activeSkin.skinType === 'microsoft' ? (
@@ -125,10 +109,7 @@ export function AccountCard({ account, instance, version, settings, memory }: Ac
               className={`${styles.skinPillBtn} ${activeSkin.skinType === 'steve' ? styles.skinPillBtnActive : ''}`}
               role="radio"
               aria-checked={activeSkin.skinType === 'steve'}
-              onClick={() => {
-                setSelectedSkin('steve')
-                setSelectedSkinType('steve')
-              }}
+              onClick={() => selectSkinType('steve')}
               title={t('account.skin.steve')}
             >
               {activeSkin.skinType === 'steve' ? (
@@ -146,10 +127,7 @@ export function AccountCard({ account, instance, version, settings, memory }: Ac
               className={`${styles.skinPillBtn} ${activeSkin.skinType === 'alex' ? styles.skinPillBtnActive : ''}`}
               role="radio"
               aria-checked={activeSkin.skinType === 'alex'}
-              onClick={() => {
-                setSelectedSkin('alex')
-                setSelectedSkinType('alex')
-              }}
+              onClick={() => selectSkinType('alex')}
               title={t('account.skin.alex')}
             >
               {activeSkin.skinType === 'alex' ? (
@@ -171,7 +149,7 @@ export function AccountCard({ account, instance, version, settings, memory }: Ac
                 if (!activeSkin.hasCustom) {
                   fileInputRef.current?.click()
                 } else {
-                  setSelectedSkinType('custom')
+                  selectSkinType('custom')
                 }
               }}
               title={t('account.skin.custom')}

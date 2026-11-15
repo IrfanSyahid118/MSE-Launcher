@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ExternalLink } from 'lucide-react'
 import { compareMinecraftVersions, isVersionCompatibleWithMinecraft } from '@mc/shared'
 import type { ContentProjectSummary, Instance, LoaderType } from '@mc/shared'
@@ -13,6 +14,7 @@ import {
   useInstances,
 } from '../../api/queries'
 import { errorMessage, invoke } from '../../api/launcher'
+import { registerInstallTask } from '../../api/task-registration'
 import { useAppStore } from '../../stores/app-store'
 import { GlassButton } from '../GlassButton/GlassButton'
 import { GlassDialog } from '../GlassDialog/GlassDialog'
@@ -25,6 +27,7 @@ export interface ContentInstallDialogProps {
   onOpenChange: (open: boolean) => void
   project: ContentProjectSummary
   instance: Instance | null
+  initialVersionId?: string | null | undefined
 }
 
 const EMPTY_VERSIONS = 0
@@ -38,11 +41,12 @@ export function ContentInstallDialog({
   onOpenChange,
   project,
   instance,
+  initialVersionId = null,
 }: ContentInstallDialogProps): ReactNode {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const pushToast = useAppStore((state) => state.pushToast)
-  const upsertInstallJob = useAppStore((state) => state.upsertInstallJob)
-  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null)
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(initialVersionId)
   const [hideRelease, setHideRelease] = useState(false)
   const [hideBeta, setHideBeta] = useState(false)
   const [hideAlpha, setHideAlpha] = useState(false)
@@ -135,6 +139,10 @@ export function ContentInstallDialog({
   const worlds = worldsQuery.data ?? []
 
   useEffect(() => {
+    setSelectedVersionId(initialVersionId)
+  }, [initialVersionId, project.id])
+
+  useEffect(() => {
     if (!open || versions.length === EMPTY_VERSIONS || selectedVersionId !== null) {
       return
     }
@@ -145,6 +153,7 @@ export function ContentInstallDialog({
     open && !isModpack && currentInstance ? currentInstance.id : null,
     project.provider,
     open && !isModpack ? selectedVersionId : null,
+    isDatapack && worldId ? worldId : null,
   )
   const plan = planQuery.data
 
@@ -160,11 +169,15 @@ export function ContentInstallDialog({
           provider: project.provider,
           versionId: selectedVersionId,
           instanceName: modpackInstanceName.trim() || project.title,
+          projectId: project.id,
+          iconUrl: project.iconUrl,
         },
         {
           onSuccess: ({ taskId: id }) => {
-            upsertInstallJob({ taskId: id, title: project.title, progress: null })
-            pushToast(`${t('browse.installing')} ${project.title}`, 'info')
+            const outcome = registerInstallTask(id, project.title, queryClient, t)
+            if (outcome === 'active') {
+              pushToast(t('browse.installingItem', { title: project.title }), 'info')
+            }
             onOpenChange(false)
           },
           onError: (err) => {
@@ -186,8 +199,10 @@ export function ContentInstallDialog({
       },
       {
         onSuccess: ({ taskId: id }) => {
-          upsertInstallJob({ taskId: id, title: project.title, progress: null })
-          pushToast(`${t('browse.installing')} ${project.title}`, 'info')
+          const outcome = registerInstallTask(id, project.title, queryClient, t)
+          if (outcome === 'active') {
+            pushToast(t('browse.installingItem', { title: project.title }), 'info')
+          }
           onOpenChange(false)
         },
         onError: (err) => {

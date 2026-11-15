@@ -9,6 +9,13 @@ export const usernameSchema = z
   .max(16, 'Username maksimal 16 karakter.')
   .regex(/^[A-Za-z0-9_]+$/, 'Username hanya boleh huruf, angka, dan garis bawah.')
 
+export const accountCapeSchema = z.object({
+  id: z.string().min(1),
+  state: z.enum(['ACTIVE', 'INACTIVE']),
+  url: z.string().min(1),
+  alias: z.string().optional(),
+})
+
 export const accountSchema = z.object({
   id: z.uuid(),
   username: z.string().min(1),
@@ -24,6 +31,8 @@ export const accountSchema = z.object({
   skinUrl: z.string().min(1).optional(),
   skinVariant: z.enum(['classic', 'slim']).optional(),
   capeUrl: z.string().min(1).optional(),
+  activeCapeId: z.string().min(1).optional(),
+  capes: z.array(accountCapeSchema).optional(),
 })
 
 export const accountsFileSchema = z.object({

@@ -146,4 +146,8 @@ pub struct InstallModpackRequest {
     pub provider: ContentProviderId,
     pub version_id: String,
     pub instance_name: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }

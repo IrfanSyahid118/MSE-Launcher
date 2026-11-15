@@ -22,8 +22,16 @@ pub fn neoforge_to_game_version(version: &str) -> Option<String> {
     let caps = NEOFORGE_GAME_REGEX.captures(version)?;
     let major = caps.get(1)?.as_str();
     let minor = caps.get(2)?.as_str();
+    let major_num = major.parse::<u32>().unwrap_or(0);
 
-    if minor == "0" {
+    // Mojang switched from 1.21.x to year-based 26.x versioning; keep 26.x unprefixed.
+    if major_num >= 26 {
+        if minor == "0" {
+            Some(major.to_string())
+        } else {
+            Some(format!("{}.{}", major, minor))
+        }
+    } else if minor == "0" {
         Some(format!("1.{}", major))
     } else {
         Some(format!("1.{}.{}", major, minor))

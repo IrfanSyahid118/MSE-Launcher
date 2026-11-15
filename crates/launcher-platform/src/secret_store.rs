@@ -73,18 +73,24 @@ mod dpapi {
             )
         };
 
-        if success == 0 {
+        if success == 0 || out_blob.pb_data.is_null() {
             return Err(LauncherErrorPayload::internal(
                 "DPAPI CryptProtectData gagal.",
             ));
         }
 
-        let slice =
-            unsafe { std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize) };
-        let result = slice.to_vec();
+        let result = if out_blob.cb_data == 0 {
+            Vec::new()
+        } else {
+            let slice =
+                unsafe { std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize) };
+            slice.to_vec()
+        };
 
         unsafe {
-            std::ptr::write_bytes(out_blob.pb_data, 0, out_blob.cb_data as usize);
+            if out_blob.cb_data > 0 {
+                std::ptr::write_bytes(out_blob.pb_data, 0, out_blob.cb_data as usize);
+            }
             LocalFree(out_blob.pb_data as *mut std::ffi::c_void);
         }
 
@@ -120,18 +126,24 @@ mod dpapi {
             )
         };
 
-        if success == 0 {
+        if success == 0 || out_blob.pb_data.is_null() {
             return Err(LauncherErrorPayload::internal(
                 "DPAPI CryptUnprotectData gagal.",
             ));
         }
 
-        let slice =
-            unsafe { std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize) };
-        let result = slice.to_vec();
+        let result = if out_blob.cb_data == 0 {
+            Vec::new()
+        } else {
+            let slice =
+                unsafe { std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize) };
+            slice.to_vec()
+        };
 
         unsafe {
-            std::ptr::write_bytes(out_blob.pb_data, 0, out_blob.cb_data as usize);
+            if out_blob.cb_data > 0 {
+                std::ptr::write_bytes(out_blob.pb_data, 0, out_blob.cb_data as usize);
+            }
             LocalFree(out_blob.pb_data as *mut std::ffi::c_void);
         }
 
@@ -245,15 +257,40 @@ mod dpapi {
 
         let tmp_path = key_path.with_extension(format!("key.tmp-{}", fastrand::u64(..)));
         write_restricted(&tmp_path, &key)?;
-        if let Err(e) = fs::rename(&tmp_path, &key_path) {
-            let _ = fs::remove_file(&tmp_path);
-            key.zeroize();
-            return Err(LauncherErrorPayload::file_system(format!(
-                "Gagal menyimpan berkas kunci secrets: {}",
-                e
-            )));
+        match fs::hard_link(&tmp_path, &key_path) {
+            Ok(()) => {
+                let _ = fs::remove_file(&tmp_path);
+                Ok(key)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&tmp_path);
+                key.zeroize();
+                let mut raw = fs::read(&key_path).map_err(|err| {
+                    LauncherErrorPayload::file_system(format!(
+                        "Gagal membaca kunci secrets: {}",
+                        err
+                    ))
+                })?;
+                if raw.len() != KEY_LEN {
+                    raw.zeroize();
+                    return Err(LauncherErrorPayload::internal(
+                        "Panjang kunci secrets tidak valid.",
+                    ));
+                }
+                let mut existing = [0u8; KEY_LEN];
+                existing.copy_from_slice(&raw);
+                raw.zeroize();
+                Ok(existing)
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp_path);
+                key.zeroize();
+                Err(LauncherErrorPayload::file_system(format!(
+                    "Gagal menyimpan berkas kunci secrets: {}",
+                    e
+                )))
+            }
         }
-        Ok(key)
     }
 
     pub fn encrypt_bytes(
@@ -448,6 +485,13 @@ impl SecretStore {
                     e
                 )));
             }
+            if let Err(e) = file.sync_all() {
+                let _ = fs::remove_file(&tmp);
+                return Err(LauncherErrorPayload::file_system(format!(
+                    "Gagal melakukan sync temporary secrets.bin: {}",
+                    e
+                )));
+            }
         }
 
         fs::rename(&tmp, &self.secrets_path).map_err(|e| {
@@ -466,17 +510,29 @@ impl SecretStore {
         let mut cache = self.cache.write().map_err(|_| {
             LauncherErrorPayload::internal("Lock SecretStore mengalami poison error.")
         })?;
-        cache.insert(key.to_string(), value.to_string());
-        self.persist_to_disk(&cache)
+        let mut next = cache.clone();
+        next.insert(key.to_string(), value.to_string());
+        self.persist_to_disk(&next)?;
+        if let Some(mut old_val) = cache.insert(key.to_string(), value.to_string()) {
+            old_val.zeroize();
+        }
+        Ok(())
     }
 
     pub fn delete_sync(&self, key: &str) -> Result<(), LauncherErrorPayload> {
         let mut cache = self.cache.write().map_err(|_| {
             LauncherErrorPayload::internal("Lock SecretStore mengalami poison error.")
         })?;
+        if !cache.contains_key(key) {
+            return Ok(());
+        }
+        let mut next = cache.clone();
+        if let Some(mut removed_clone) = next.remove(key) {
+            removed_clone.zeroize();
+        }
+        self.persist_to_disk(&next)?;
         if let Some(mut old_val) = cache.remove(key) {
             old_val.zeroize();
-            self.persist_to_disk(&cache)?;
         }
         Ok(())
     }

@@ -1,12 +1,13 @@
 import type { ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { ChevronLeft, ChevronRight, Download, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download } from 'lucide-react'
 import type { Account, Instance } from '@mc/shared'
 import { useI18n } from '../../i18n'
 import { useInstances } from '../../api/queries'
 import { useAppStore } from '../../stores/app-store'
 import type { BreadcrumbSegment } from '../../stores/app-store'
 import { AccountMenu } from '../AccountMenu/AccountMenu'
+import { PlayerHeadAvatar } from '../MinecraftSkin/PlayerHeadAvatar'
 import styles from './TitleBar.module.css'
 
 export interface TitleBarProps {
@@ -80,7 +81,7 @@ export function TitleBar({ trail, account, loading }: TitleBarProps): ReactNode 
           </button>
         </div>
 
-        <nav className={styles.trail} aria-label="Breadcrumb">
+        <nav className={styles.trail} aria-label={t('titlebar.breadcrumb')}>
           <svg className={styles.trailCaret} viewBox="0 0 12 12" aria-hidden focusable="false">
             <path d="M3 1.6 9.2 6 3 10.4z" fill="currentColor" />
           </svg>
@@ -154,16 +155,6 @@ export function TitleBar({ trail, account, loading }: TitleBarProps): ReactNode 
           </div>
         ) : null}
 
-        <button
-          type="button"
-          className={styles.updatePill}
-          onClick={() => window.location.reload()}
-          title="Reload interface"
-        >
-          <RefreshCw size={13} className={styles.updateIcon} aria-hidden />
-          <span>Reload</span>
-        </button>
-
         <div
           className={`${styles.statusPill} ${isGameRunning ? styles.statusPillActive : ''}`}
           role="status"
@@ -184,9 +175,7 @@ export function TitleBar({ trail, account, loading }: TitleBarProps): ReactNode 
           <AccountMenu
             trigger={
               <button type="button" className={styles.account} aria-label={t('titlebar.account')}>
-                <span className={styles.avatar} aria-hidden>
-                  {account.username.slice(0, 2).toUpperCase()}
-                </span>
+                <PlayerHeadAvatar account={account} isActiveAccount size={22} className={styles.avatar} />
                 <span className={styles.accountText}>
                   <span className={styles.username}>{account.username}</span>
                   <span className={styles.accountType}>

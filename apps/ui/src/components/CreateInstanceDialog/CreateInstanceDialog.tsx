@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   Box,
   Check,
   Compass,
   Flame,
-  FolderArchive,
   HelpCircle,
   Plus,
   Search,
@@ -17,7 +17,6 @@ import type {
   ContentProviderId,
   ContentType,
   LoaderType,
-  ProgressEvent,
 } from '@mc/shared'
 import { useI18n } from '../../i18n'
 import {
@@ -31,6 +30,7 @@ import {
   useVersions,
 } from '../../api/queries'
 import { errorMessage } from '../../api/launcher'
+import { registerInstallTask } from '../../api/task-registration'
 import { useAppStore } from '../../stores/app-store'
 import { GlassButton } from '../GlassButton/GlassButton'
 import { GlassDialog } from '../GlassDialog/GlassDialog'
@@ -51,7 +51,7 @@ const LOADER_LABELS: Record<'fabric' | 'quilt' | 'forge', string> = {
 const CHECKED_LOADERS = ['fabric', 'quilt', 'forge'] as const
 const SEARCH_DEBOUNCE_MS = 300
 
-type InstanceSource = 'vanilla' | 'modrinth' | 'curseforge' | 'import'
+type InstanceSource = 'vanilla' | 'modrinth' | 'curseforge'
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value)
@@ -69,8 +69,8 @@ export interface CreateInstanceDialogProps {
 
 export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialogProps): ReactNode {
   const { t } = useI18n()
+  const queryClient = useQueryClient()
   const pushToast = useAppStore((state) => state.pushToast)
-  const upsertInstallJob = useAppStore((state) => state.upsertInstallJob)
   const versionsQuery = useVersions(open)
   const loaderGamesQuery = useLoaderGames(open)
   const integrationsQuery = useIntegrations(open)
@@ -94,7 +94,10 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
   const [hideBeta, setHideBeta] = useState(false)
   const [hideAlpha, setHideAlpha] = useState(false)
   const [installTaskId, setInstallTaskId] = useState<string | null>(null)
-  const [installProgress, setInstallProgress] = useState<ProgressEvent | null>(null)
+  const activeJob = useAppStore((state) =>
+    installTaskId ? state.installJobs.find((entry) => entry.taskId === installTaskId) : undefined,
+  )
+  const installProgress = activeJob?.progress ?? null
 
   const wasOpen = useRef(false)
 
@@ -210,7 +213,6 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
       setSelectedModpack(null)
       setSelectedVersionId(null)
       setInstallTaskId(null)
-      setInstallProgress(null)
     }
     wasOpen.current = open
   }, [defaultVersion, open])
@@ -234,31 +236,20 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
 
   useEffect(() => {
     if (!installTaskId) return
-    const title = selectedModpack?.title ?? name
-    upsertInstallJob({ taskId: installTaskId, title, progress: null })
-    const offProgress = window.launcher.on('task:progress', ({ taskId: id, progress: value }) => {
-      if (id === installTaskId) {
-        setInstallProgress(value)
-        upsertInstallJob({ taskId: installTaskId, title, progress: value })
-      }
-    })
     const offDone = window.launcher.on('task:done', ({ taskId: id }) => {
       if (id !== installTaskId) return
       setInstallTaskId(null)
-      setInstallProgress(null)
       onOpenChange(false)
     })
     const offError = window.launcher.on('task:error', ({ taskId: id }) => {
       if (id !== installTaskId) return
       setInstallTaskId(null)
-      setInstallProgress(null)
     })
     return () => {
-      offProgress()
       offDone()
       offError()
     }
-  }, [installTaskId, name, onOpenChange, selectedModpack?.title, upsertInstallJob])
+  }, [installTaskId, onOpenChange])
 
   const handleSelectMinecraftVersion = (nextVersion: string): void => {
     setVersion(nextVersion)
@@ -304,11 +295,19 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
           provider: source,
           versionId: selectedVersionId,
           instanceName: finalName,
+          projectId: selectedModpack?.id,
+          iconUrl: selectedModpack?.iconUrl,
         },
         {
           onSuccess: ({ taskId }) => {
-            setInstallTaskId(taskId)
-            pushToast(t('browse.installing', { title: selectedModpack?.title ?? finalName }))
+            const title = selectedModpack?.title ?? finalName
+            const outcome = registerInstallTask(taskId, title, queryClient, t)
+            if (outcome === 'done') {
+              onOpenChange(false)
+            } else if (outcome === 'active') {
+              setInstallTaskId(taskId)
+              pushToast(t('browse.installingItem', { title }), 'info')
+            }
           },
           onError: (err) => {
             pushToast(errorMessage(err, t('error.unknown')), 'error')
@@ -358,7 +357,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               }}
             >
               <Box size={16} aria-hidden />
-              <span>Standard Instance</span>
+              <span>{t('createInstance.standardInstance')}</span>
             </button>
             <button
               type="button"
@@ -372,7 +371,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               }}
             >
               <Compass size={16} aria-hidden />
-              <span>Modrinth Modpack</span>
+              <span>{t('createInstance.modrinthModpack')}</span>
             </button>
             <button
               type="button"
@@ -386,20 +385,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               }}
             >
               <Flame size={16} aria-hidden />
-              <span>CurseForge Modpack</span>
-            </button>
-            <button
-              type="button"
-              className={`${styles.sourceTab} ${source === 'import' ? styles.sourceTabActive : ''}`}
-              role="tab"
-              aria-selected={source === 'import'}
-              onClick={() => {
-                setSource('import')
-                setSelectedModpack(null)
-              }}
-            >
-              <FolderArchive size={16} aria-hidden />
-              <span>Import Instance</span>
+              <span>{t('createInstance.curseforgeModpack')}</span>
             </button>
           </div>
         </div>
@@ -430,12 +416,6 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                 data-testid="instance-name-input"
               />
             </div>
-            <div className={styles.inputField} style={{ maxWidth: '200px' }}>
-              <span className={styles.fieldLabel}>Instance Group</span>
-              <select className={styles.select} disabled>
-                <option>Default (Ungrouped)</option>
-              </select>
-            </div>
           </div>
         </div>
 
@@ -446,9 +426,9 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               {/* Column 1: Game Version Selection */}
               <div className={styles.panel}>
                 <div className={styles.panelHeader}>
-                  <h3 className={styles.panelTitle}>1. Minecraft Version</h3>
+                  <h3 className={styles.panelTitle}>{t('createInstance.stepVersionTitle')}</h3>
                   <span className={styles.panelSubtitle}>
-                    {filteredReleases.length} releases available
+                    {t('createInstance.releasesAvailable', { count: filteredReleases.length })}
                   </span>
                 </div>
 
@@ -458,7 +438,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                     type="text"
                     className={styles.searchInput}
                     value={versionSearch}
-                    placeholder="Filter Minecraft versions..."
+                    placeholder={t('createInstance.filterVersionsPlaceholder')}
                     onChange={(e) => setVersionSearch(e.target.value)}
                   />
                 </div>
@@ -466,7 +446,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                 {/* Main Native Select (for E2E selectOption compatibility) */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <label htmlFor="instance-version-select" className={styles.fieldLabel}>
-                    Selected Version
+                    {t('instance.selectedVersion')}
                   </label>
                   <select
                     id="instance-version-select"
@@ -498,18 +478,23 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                         role="button"
                         tabIndex={0}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleSelectMinecraftVersion(v.id)
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            handleSelectMinecraftVersion(v.id)
+                          }
                         }}
                       >
                         <div className={styles.versionItemLeft}>
                           {isSelected ? <Check size={14} color="var(--accent)" /> : <Box size={14} />}
                           <span className={styles.versionName}>Minecraft {v.id}</span>
                           <span className={styles.versionTag}>
-                            {v.type === 'release' ? 'Release' : 'Snapshot'}
+                            {v.type === 'release'
+                              ? t('createInstance.channelRelease')
+                              : t('createInstance.channelSnapshot')}
                           </span>
                         </div>
                         {v.installed ? (
-                          <span className={styles.versionInstalledBadge}>Installed</span>
+                          <span className={styles.versionInstalledBadge}>{t('browse.installedBadge')}</span>
                         ) : null}
                       </div>
                     )
@@ -520,8 +505,8 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               {/* Column 2: Mod Loader Configuration */}
               <div className={styles.panel}>
                 <div className={styles.panelHeader}>
-                  <h3 className={styles.panelTitle}>2. Mod Loader & Environment</h3>
-                  <span className={styles.panelSubtitle}>Compatibility checked</span>
+                  <h3 className={styles.panelTitle}>{t('createInstance.stepLoaderTitle')}</h3>
+                  <span className={styles.panelSubtitle}>{t('createInstance.compatibilityChecked')}</span>
                 </div>
 
                 <div className={styles.configGroup}>
@@ -595,21 +580,21 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                   ) : null}
 
                   <div className={styles.settingField} style={{ marginTop: '12px' }}>
-                    <span className={styles.settingLabel}>Instance Isolation</span>
-                    <p className={styles.hint}>
-                      Each instance maintains its own dedicated directory for mods, configurations, and saves.
-                    </p>
+                    <span className={styles.settingLabel}>{t('createInstance.isolationTitle')}</span>
+                    <p className={styles.hint}>{t('createInstance.isolationDesc')}</p>
                   </div>
                 </div>
               </div>
             </>
-          ) : source === 'modrinth' || source === 'curseforge' ? (
+          ) : (
             <>
               {/* Modpack Search & List */}
               <div className={styles.panel}>
                 <div className={styles.panelHeader}>
                   <h3 className={styles.panelTitle}>
-                    {source === 'modrinth' ? 'Modrinth Catalog' : 'CurseForge Catalog'}
+                    {source === 'modrinth'
+                      ? t('createInstance.modrinthCatalog')
+                      : t('createInstance.curseforgeCatalog')}
                   </h3>
                 </div>
 
@@ -619,7 +604,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                     type="text"
                     className={styles.searchInput}
                     value={modpackSearch}
-                    placeholder="Search modpacks..."
+                    placeholder={t('createInstance.searchModpacksPlaceholder')}
                     onChange={(e) => setModpackSearch(e.target.value)}
                   />
                 </div>
@@ -633,28 +618,35 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                   ) : modpackSearchQuery.isLoading ? (
                     <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>
                       <Spinner size={24} style={{ margin: '0 auto 8px auto' }} />
-                      <span>Loading modpacks...</span>
+                      <span>{t('createInstance.loadingModpacks')}</span>
                     </div>
                   ) : modpackSearchQuery.data?.items.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>
-                      <span>No modpacks found.</span>
+                      <span>{t('createInstance.noModpacksFound')}</span>
                     </div>
                   ) : (
                     modpackSearchQuery.data?.items.map((pack) => {
                       const isSelected = selectedModpack?.id === pack.id
+                      const selectPack = (): void => {
+                        setSelectedModpack(pack)
+                        setSelectedVersionId(null)
+                        if (!name || name === selectedModpack?.title) {
+                          setName(pack.title)
+                        }
+                      }
                       return (
                         <div
                           key={pack.id}
                           className={`${styles.versionItem} ${isSelected ? styles.versionItemActive : ''}`}
-                          onClick={() => {
-                            setSelectedModpack(pack)
-                            setSelectedVersionId(null)
-                            if (!name || name === selectedModpack?.title) {
-                              setName(pack.title)
-                            }
-                          }}
+                          onClick={selectPack}
                           role="button"
                           tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              selectPack()
+                            }
+                          }}
                         >
                           <div className={styles.versionItemLeft}>
                             {pack.iconUrl ? (
@@ -679,13 +671,13 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               {/* Modpack Version & Details */}
               <div className={styles.panel}>
                 <div className={styles.panelHeader}>
-                  <h3 className={styles.panelTitle}>Modpack Details</h3>
+                  <h3 className={styles.panelTitle}>{t('createInstance.modpackDetails')}</h3>
                 </div>
 
                 {selectedModpack ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', flex: 1 }}>
                     <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                      {selectedModpack.description || 'No description provided.'}
+                      {selectedModpack.description || t('createInstance.noDescription')}
                     </div>
 
                     <VersionChannelFilter
@@ -698,7 +690,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                     />
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      <label className={styles.settingLabel}>Select Version</label>
+                      <label className={styles.settingLabel}>{t('createInstance.selectVersion')}</label>
                       <GlassSelect
                         value={selectedVersionId ?? ''}
                         onValueChange={(val) => setSelectedVersionId(val)}
@@ -719,26 +711,18 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
                         percent={installPercent}
                         label={
                           installProgress?.stage ||
-                          t('browse.installing', { title: selectedModpack.title })
+                          t('browse.installingItem', { title: selectedModpack.title })
                         }
                       />
                     ) : null}
                   </div>
                 ) : (
                   <div style={{ textAlign: 'center', padding: '40px 16px', color: 'var(--text-tertiary)' }}>
-                    <span>Select a modpack from the list to configure version and install.</span>
+                    <span>{t('createInstance.selectModpackToConfigure')}</span>
                   </div>
                 )}
               </div>
             </>
-          ) : (
-            <div className={styles.dropzone} style={{ gridColumn: 'span 2' }}>
-              <FolderArchive size={42} color="var(--accent)" aria-hidden />
-              <div className={styles.dropzoneTitle}>{t('instance.sourceImport')}</div>
-              <div className={styles.dropzoneHint}>
-                Supported formats: Modrinth Pack (.mrpack) and CurseForge Modpack Archive (.zip).
-              </div>
-            </div>
           )}
         </div>
 
@@ -749,9 +733,7 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               type="button"
               variant="ghost"
               icon={<HelpCircle size={14} aria-hidden />}
-              onClick={() =>
-                pushToast('Configure Minecraft version and mod loader, then click Create Instance.')
-              }
+              onClick={() => pushToast(t('createInstance.helpTooltip'))}
             >
               {t('instance.help')}
             </GlassButton>
@@ -774,10 +756,10 @@ export function CreateInstanceDialog({ open, onOpenChange }: CreateInstanceDialo
               data-testid="create-instance-submit"
             >
               {isInstalling
-                ? 'Installing...'
+                ? t('browse.installing')
                 : source === 'vanilla'
                   ? t('instances.create')
-                  : 'Install Modpack'}
+                  : t('browse.installModpackAction')}
             </GlassButton>
           </div>
         </div>

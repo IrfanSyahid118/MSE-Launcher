@@ -34,10 +34,34 @@ pub fn resolve_game_executable(java_path: &Path) -> PathBuf {
     java_path.to_path_buf()
 }
 
-pub fn run_java_version(executable: &Path) -> Result<String, LauncherErrorPayload> {
+pub fn resolve_probe_executable(executable: &Path) -> Result<PathBuf, LauncherErrorPayload> {
     let validated_exe = launcher_security::validate_java_executable_path(executable)?;
-    let mut cmd = Command::new(&validated_exe);
+    if validated_exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("javaw.exe"))
+    {
+        let sibling_java = validated_exe.with_file_name("java.exe");
+        return launcher_security::validate_java_executable_path(&sibling_java).map_err(|_| {
+            LauncherErrorPayload::invalid_input(
+                "javaw.exe tidak mendukung probe konsol dan java.exe pendamping tidak ditemukan.",
+            )
+        });
+    }
+    Ok(validated_exe)
+}
+
+pub fn run_java_version(executable: &Path) -> Result<String, LauncherErrorPayload> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let probe_exe = resolve_probe_executable(executable)?;
+    let mut cmd = Command::new(&probe_exe);
     cmd.args(["-XshowSettings:properties", "-version"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env_remove("JAVA_TOOL_OPTIONS")
         .env_remove("_JAVA_OPTIONS")
         .env_remove("JDK_JAVA_OPTIONS")
@@ -50,12 +74,58 @@ pub fn run_java_version(executable: &Path) -> Result<String, LauncherErrorPayloa
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = cmd.output().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         LauncherErrorPayload::internal(format!("Gagal mengeksekusi biner Java: {}", e))
     })?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let stdout_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout_pipe {
+            let _ = out.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut err) = stderr_pipe {
+            let _ = err.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let timeout = Duration::from_secs(10);
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(LauncherErrorPayload::internal(
+                        "Pemeriksaan versi Java melewati batas waktu (10 detik).",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(LauncherErrorPayload::internal(format!(
+                    "Gagal memantau proses pemeriksaan Java: {}",
+                    e
+                )));
+            }
+        }
+    }
+
+    let stdout_bytes = stdout_handle.join().unwrap_or_default();
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
     let combined = format!("{}\n{}", stdout, stderr);
 
     Ok(combined)
@@ -135,7 +205,7 @@ pub fn find_candidate_executables(paths: &DataPaths) -> Vec<PathBuf> {
     let managed_base = paths.runtimes_dir.join(platform_key);
     if let Ok(entries) = std::fs::read_dir(&managed_base) {
         for entry in entries.flatten() {
-            if entry.path().is_dir() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 let java_exe = entry.path().join("bin").join(bin_name);
                 if java_exe.exists() {
                     candidates.push(java_exe);
@@ -265,4 +335,35 @@ pub fn detect_all_installations(paths: &DataPaths) -> Vec<JavaInstallation> {
     });
 
     installations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_probe_executable_switches_javaw_to_java() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("mcl-java-probe-{}-{}", std::process::id(), nanos));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let java_exe = bin.join("java.exe");
+        let javaw_exe = bin.join("javaw.exe");
+        std::fs::write(&java_exe, b"stub").unwrap();
+        std::fs::write(&javaw_exe, b"stub").unwrap();
+
+        let resolved = resolve_probe_executable(&javaw_exe).expect("should switch to java.exe");
+        assert_eq!(
+            resolved.file_name().and_then(|s| s.to_str()),
+            Some("java.exe")
+        );
+
+        std::fs::remove_file(&java_exe).unwrap();
+        assert!(resolve_probe_executable(&javaw_exe).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

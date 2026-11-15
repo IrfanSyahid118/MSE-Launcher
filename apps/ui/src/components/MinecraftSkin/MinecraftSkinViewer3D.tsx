@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import * as THREE from 'three'
+import { useI18n } from '../../i18n'
 import { extractCapeFaces, extractSkinFaces, getSteveSkinDataUrl } from './skin-textures'
 import type { CapeFaces, ExtractedSkinResult } from './skin-textures'
 import { SkinFallback } from './SkinFallback'
@@ -117,6 +118,7 @@ export function MinecraftSkinViewer3D({
   zoom = 1,
   viewBack = false,
 }: MinecraftSkinViewer3DProps): ReactNode {
+  const { t } = useI18n()
   const containerRef = useRef<HTMLDivElement>(null)
   // Create the canvas imperatively so React StrictMode remounts do not reuse a lost WebGL context.
   const canvasHostRef = useRef<HTMLDivElement>(null)
@@ -278,9 +280,25 @@ export function MinecraftSkinViewer3D({
       // Allow Windows GPU drivers a short window to recover before switching to 2D fallback.
       event.preventDefault()
       contextLostRef.current = true
+      if (lostTimerRef.current !== null) {
+        window.clearTimeout(lostTimerRef.current)
+      }
       lostTimerRef.current = window.setTimeout(() => {
         lostTimerRef.current = null
         if (!contextLostRef.current) return
+        if (animFrameIdRef.current !== null) {
+          cancelAnimationFrame(animFrameIdRef.current)
+          animFrameIdRef.current = null
+        }
+        if (bodyPartsRef.current) {
+          scene.remove(bodyPartsRef.current.modelRoot)
+          disposeModel(bodyPartsRef.current.modelRoot)
+          bodyPartsRef.current = null
+        }
+        renderer.dispose()
+        rendererRef.current = null
+        cameraRef.current = null
+        sceneRef.current = null
         // Detach the dead canvas so the underlying 2D preview becomes visible.
         canvas.remove()
         canvasRef.current = null
@@ -732,13 +750,13 @@ export function MinecraftSkinViewer3D({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       role="region"
-      aria-label="Minecraft player skin preview"
+      aria-label={t('skin.preview3dLabel')}
       tabIndex={0}
       title={
         webglFailed
           ? undefined
           : interactive
-            ? 'Drag to rotate 360 degrees, scroll to zoom'
+            ? t('skin.preview3dHint')
             : undefined
       }
     >
@@ -752,7 +770,7 @@ export function MinecraftSkinViewer3D({
         <SkinFallback
           skinUrl={resolvedSkinUrl}
           isSlim={isSlim ?? detectedSlim}
-          label="2D Minecraft player skin preview"
+          label={t('skin.preview2dLabel')}
         />
       ) : null}
     </div>

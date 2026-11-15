@@ -375,11 +375,7 @@ impl LauncherLogStore {
 }
 
 fn format_log_line(entry: &LauncherLogLine) -> String {
-    let time_short = if entry.time.len() >= 19 {
-        &entry.time[..19]
-    } else {
-        entry.time.as_str()
-    };
+    let time_short: String = entry.time.chars().take(19).collect();
     format!("[{}] [{}] {}", time_short, entry.stream, entry.line)
 }
 
@@ -431,11 +427,40 @@ fn parse_persisted_line(raw: &str) -> Option<LauncherLogLine> {
 }
 
 fn read_tail_lines(path: &PathBuf, max_lines: usize) -> Vec<String> {
-    let Ok(content) = fs::read_to_string(path) else {
+    use std::io::Seek;
+
+    const MAX_TAIL_READ_BYTES: u64 = 512 * 1024;
+    let Ok(meta) = fs::symlink_metadata(path) else {
         return Vec::new();
     };
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Vec::new();
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = meta.len();
+    let offset = len.saturating_sub(MAX_TAIL_READ_BYTES);
+    if offset > 0 && file.seek(std::io::SeekFrom::Start(offset)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::with_capacity((len - offset).min(MAX_TAIL_READ_BYTES) as usize);
+    if file
+        .take(MAX_TAIL_READ_BYTES)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let body = if offset > 0 {
+        // Drop the truncated leading line fragment after mid-file seek.
+        text.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        text.as_ref()
+    };
     let mut ring: VecDeque<String> = VecDeque::with_capacity(max_lines);
-    for line in content.lines() {
+    for line in body.lines() {
         if ring.len() >= max_lines {
             ring.pop_front();
         }
@@ -464,12 +489,12 @@ pub fn sanitize_log_text(input: &str) -> String {
     let patterns = PATTERNS.get_or_init(|| {
         vec![
             (
-                Regex::new(r#"(?i)(access[_-]?token|refresh[_-]?token|x-api-key|client[_-]?secret|mc_access_token)\s*([:=])\s*([^\s,"']+)"#)
+                Regex::new(r#"(?i)(access[_-]?token|refresh[_-]?token|session[_-]?token|x-api-key|client[_-]?secret|mc_access_token)\s*([:=])\s*([^\s,"']+)"#)
                     .expect("valid token regex"),
                 "$1$2[REDACTED]",
             ),
             (
-                Regex::new(r#"(?i)("(?:accessToken|refreshToken|x-api-key|clientSecret|apiKey)"\s*:\s*")([^"]+)(")"#)
+                Regex::new(r#"(?i)("(?:access[_-]?token|refresh[_-]?token|session[_-]?token|x-api-key|client[_-]?secret|mc[_-]?access[_-]?token|api[_-]?key)"\s*:\s*")([^"]+)(")"#)
                     .expect("valid json secret regex"),
                 "$1[REDACTED]$3",
             ),
@@ -478,11 +503,16 @@ pub fn sanitize_log_text(input: &str) -> String {
                 "$1[REDACTED]",
             ),
             (
+                Regex::new(r#"(?i)(Authorization\s*[:=]\s*)\S+(?:\s+\S+)?"#)
+                    .expect("valid auth header regex"),
+                "$1[REDACTED]",
+            ),
+            (
                 Regex::new(r#"(?i)(Bearer\s+)[A-Za-z0-9\-._~+/]+=*"#).expect("valid bearer regex"),
                 "$1[REDACTED]",
             ),
             (
-                Regex::new(r"(?i)([A-Z]:\\Users\\)([^\\/:*?\x22<>|\r\n]+)(\\)")
+                Regex::new(r"(?i)([A-Z]:\\{1,2}Users\\{1,2})([^\\/:*?\x22<>|\r\n]+)(\\{1,2})")
                     .expect("valid win path with backslash regex"),
                 "$1<USER>$3",
             ),
@@ -497,7 +527,8 @@ pub fn sanitize_log_text(input: &str) -> String {
                 "$1<USER>$3",
             ),
             (
-                Regex::new(r"(?i)([A-Z]:\\Users\\)([^\\/:*?\x22<>|\s]+)").expect("valid win path regex"),
+                Regex::new(r"(?i)([A-Z]:\\{1,2}Users\\{1,2})([^\\/:*?\x22<>|\s]+)")
+                    .expect("valid win path regex"),
                 "$1<USER>",
             ),
             (
@@ -722,5 +753,28 @@ mod tests {
         assert!(clean_win.contains(r"C:\Users\<USER>\AppData"));
         assert!(!clean_unix.contains("alice smith"));
         assert!(clean_unix.contains("/home/<USER>/MCLauncher"));
+    }
+
+    #[test]
+    fn test_h4_sanitize_log_text_redacts_snake_case_and_debug_paths() {
+        let json = r#"{"access_token":"tok1","refresh_token":"tok2","client_secret":"sec3","mc_access_token":"tok4"}"#;
+        let clean_json = sanitize_log_text(json);
+        assert!(!clean_json.contains("tok1"));
+        assert!(!clean_json.contains("tok2"));
+        assert!(!clean_json.contains("sec3"));
+        assert!(!clean_json.contains("tok4"));
+
+        let debug_path = format!("{:?}", r"C:\Users\SecretUser\AppData\Roaming");
+        let clean_debug = sanitize_log_text(&debug_path);
+        assert!(!clean_debug.contains("SecretUser"));
+        assert!(clean_debug.contains("<USER>"));
+
+        let utf8_entry = LauncherLogLine {
+            time: "日本語の長いタイムスタンプ文字列".to_string(),
+            stream: "stdout".to_string(),
+            line: "ok".to_string(),
+        };
+        let formatted = format_log_line(&utf8_entry);
+        assert!(formatted.contains("ok"));
     }
 }

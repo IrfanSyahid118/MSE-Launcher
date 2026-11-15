@@ -64,26 +64,68 @@ pub fn offline_uuid_with_variant(username: &str, is_slim: bool) -> String {
 pub struct AccountsStore {
     paths: DataPaths,
     cache: Arc<RwLock<AccountsFile>>,
+    unrecovered_load_error: Arc<RwLock<Option<String>>>,
 }
 
 impl AccountsStore {
     pub fn new(paths: DataPaths) -> Self {
-        let initial = Self::load_from_disk(&paths);
+        let (initial, load_err) = Self::load_from_disk(&paths);
         Self {
             paths,
             cache: Arc::new(RwLock::new(initial)),
+            unrecovered_load_error: Arc::new(RwLock::new(load_err)),
         }
     }
 
-    fn load_from_disk(paths: &DataPaths) -> AccountsFile {
+    fn load_from_disk(paths: &DataPaths) -> (AccountsFile, Option<String>) {
         match read_json_file::<AccountsFile>(&paths.accounts_file) {
-            Ok(Some(a)) => a,
-            _ => {
+            Ok(Some(a)) => (a, None),
+            Ok(None) => {
                 let default_file = AccountsFile::default();
                 let _ = write_json_atomic(&paths.accounts_file, &default_file);
-                default_file
+                (default_file, None)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Gagal membaca berkas akun {:?}; memakai state default di memori tanpa menimpa disk: {:?}",
+                    paths.accounts_file,
+                    e
+                );
+                (AccountsFile::default(), Some(e.message))
             }
         }
+    }
+
+    fn ensure_writable(&self) -> Result<(), LauncherErrorPayload> {
+        if let Some(reason) = self
+            .unrecovered_load_error
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if self.paths.accounts_file.exists() {
+                return Err(LauncherErrorPayload::file_system(format!(
+                    "Menolak menimpa accounts.json yang gagal dimuat: {}",
+                    reason
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn persist_next(
+        &self,
+        cache_guard: &mut AccountsFile,
+        next: AccountsFile,
+    ) -> Result<(), LauncherErrorPayload> {
+        self.ensure_writable()?;
+        write_json_atomic(&self.paths.accounts_file, &next)?;
+        *self
+            .unrecovered_load_error
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *cache_guard = next;
+        Ok(())
     }
 
     pub fn list(&self) -> Vec<Account> {
@@ -129,9 +171,9 @@ impl AccountsStore {
 
         let uuid = offline_uuid(username);
 
-        let mut file = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache_guard = self.cache.write().unwrap_or_else(|e| e.into_inner());
 
-        if let Some(existing) = file.accounts.iter().find(|a| {
+        if let Some(existing) = cache_guard.accounts.iter().find(|a| {
             a.username.eq_ignore_ascii_case(username) && a.account_type == AccountType::Offline
         }) {
             return Ok(existing.clone());
@@ -153,21 +195,22 @@ impl AccountsStore {
             capes: Vec::new(),
         };
 
-        file.accounts.push(new_account.clone());
-        write_json_atomic(&self.paths.accounts_file, &*file)?;
+        let mut next = cache_guard.clone();
+        next.accounts.push(new_account.clone());
+        self.persist_next(&mut cache_guard, next)?;
 
         Ok(new_account)
     }
 
     pub fn save_account(&self, account: Account) -> Result<(), LauncherErrorPayload> {
-        let mut file = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = file.accounts.iter_mut().find(|a| a.id == account.id) {
+        let mut cache_guard = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut next = cache_guard.clone();
+        if let Some(existing) = next.accounts.iter_mut().find(|a| a.id == account.id) {
             *existing = account;
         } else {
-            file.accounts.push(account);
+            next.accounts.push(account);
         }
-        write_json_atomic(&self.paths.accounts_file, &*file)?;
-        Ok(())
+        self.persist_next(&mut cache_guard, next)
     }
 
     pub fn update_skin(
@@ -177,8 +220,9 @@ impl AccountsStore {
         skin_variant: Option<String>,
         cape_url: Option<String>,
     ) -> Result<Account, LauncherErrorPayload> {
-        let mut file = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        let acc = file
+        let mut cache_guard = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut next = cache_guard.clone();
+        let acc = next
             .accounts
             .iter_mut()
             .find(|a| a.id == account_id || a.uuid == account_id)
@@ -199,7 +243,7 @@ impl AccountsStore {
         }
 
         let updated = acc.clone();
-        write_json_atomic(&self.paths.accounts_file, &*file)?;
+        self.persist_next(&mut cache_guard, next)?;
         Ok(updated)
     }
 
@@ -209,8 +253,9 @@ impl AccountsStore {
         cape_url: Option<String>,
         active_cape_id: Option<String>,
     ) -> Result<Account, LauncherErrorPayload> {
-        let mut file = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        let acc = file
+        let mut cache_guard = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut next = cache_guard.clone();
+        let acc = next
             .accounts
             .iter_mut()
             .find(|a| a.id == account_id || a.uuid == account_id)
@@ -227,15 +272,15 @@ impl AccountsStore {
         }
 
         let updated = acc.clone();
-        write_json_atomic(&self.paths.accounts_file, &*file)?;
+        self.persist_next(&mut cache_guard, next)?;
         Ok(updated)
     }
 
     pub fn remove(&self, id: &str) -> Result<(), LauncherErrorPayload> {
-        let mut file = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        file.accounts.retain(|a| a.id != id && a.uuid != id);
-        write_json_atomic(&self.paths.accounts_file, &*file)?;
-        Ok(())
+        let mut cache_guard = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut next = cache_guard.clone();
+        next.accounts.retain(|a| a.id != id && a.uuid != id);
+        self.persist_next(&mut cache_guard, next)
     }
 }
 

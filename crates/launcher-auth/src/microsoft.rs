@@ -3,10 +3,16 @@ use launcher_net::HttpClient;
 use launcher_platform::{DataPaths, SecretStore};
 use launcher_storage::AccountsStore;
 use launcher_types::{Account, AccountTokens, AccountType, DeviceCodeInfo, LauncherErrorPayload};
+use reqwest::Method;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
+use zeroize::Zeroize;
 
 const DEVICE_CODE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
 const TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
@@ -129,6 +135,7 @@ pub struct MicrosoftAuthService {
     http: HttpClient,
     accounts: AccountsStore,
     secrets: SecretStore,
+    refresh_locks: Arc<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl MicrosoftAuthService {
@@ -138,6 +145,69 @@ impl MicrosoftAuthService {
             http: HttpClient::new(),
             accounts,
             secrets,
+            refresh_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_loopback_test(
+        paths: DataPaths,
+        accounts: AccountsStore,
+        secrets: SecretStore,
+    ) -> Self {
+        Self {
+            paths,
+            http: HttpClient::new_loopback_test(),
+            accounts,
+            secrets,
+            refresh_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn refresh_lock_for(&self, account_id: &str) -> Arc<Mutex<()>> {
+        let mut map = self
+            .refresh_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.entry(account_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn is_expiry_still_valid(expires_at: Option<&str>) -> bool {
+        let Some(exp_str) = expires_at else {
+            return false;
+        };
+        let Ok(exp) = chrono::DateTime::parse_from_rfc3339(exp_str) else {
+            return false;
+        };
+        exp.with_timezone(&Utc) > Utc::now() + chrono::Duration::minutes(5)
+    }
+
+    async fn sleep_or_cancel(
+        dur: Duration,
+        deadline: std::time::Instant,
+        cancelled: Option<&Arc<AtomicBool>>,
+    ) -> Result<(), LauncherErrorPayload> {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(LauncherErrorPayload::auth_failed(
+                "Kode login kedaluwarsa. Mulai ulang proses masuk.",
+            ));
+        }
+        let target = std::time::Instant::now() + dur.min(remaining);
+        loop {
+            if cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(LauncherErrorPayload::new(
+                    launcher_types::ErrorCode::Cancelled,
+                    "Proses masuk Microsoft dibatalkan.",
+                ));
+            }
+            let now = std::time::Instant::now();
+            if now >= target {
+                return Ok(());
+            }
+            sleep((target - now).min(Duration::from_millis(100))).await;
         }
     }
 
@@ -190,8 +260,7 @@ impl MicrosoftAuthService {
 
         let res = self
             .http
-            .client()
-            .post(DEVICE_CODE_URL)
+            .request(Method::POST, DEVICE_CODE_URL)?
             .form(&[("client_id", client_id.as_str()), ("scope", SCOPE)])
             .send()
             .await
@@ -209,15 +278,15 @@ impl MicrosoftAuthService {
 
         if !status.is_success() {
             return Err(LauncherErrorPayload::auth_failed(format!(
-                "Microsoft menolak permintaan kode login (HTTP {}): {}",
-                status, text
+                "Microsoft menolak permintaan kode login (HTTP {}).",
+                status
             )));
         }
 
         let data: DeviceCodeResponse = serde_json::from_str(&text).map_err(|e| {
             LauncherErrorPayload::auth_failed(format!(
-                "Microsoft tidak memberikan kode login yang valid: {} (isi: {})",
-                e, text
+                "Microsoft tidak memberikan kode login yang valid: {}",
+                e
             ))
         })?;
 
@@ -234,14 +303,36 @@ impl MicrosoftAuthService {
         &self,
         code: DeviceCodeInfo,
     ) -> Result<Account, LauncherErrorPayload> {
+        self.complete_login_with_cancel(code, None).await
+    }
+
+    pub async fn complete_login_with_cancel(
+        &self,
+        code: DeviceCodeInfo,
+        cancelled: Option<Arc<AtomicBool>>,
+    ) -> Result<Account, LauncherErrorPayload> {
         let client_id = self.client_id().ok_or_else(|| {
             LauncherErrorPayload::provider_not_configured("Client ID Microsoft tidak ditemukan.")
         })?;
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(code.expires_in);
-        let mut interval_secs = code.interval.max(1);
+        let capped_secs = code.expires_in.min(3600);
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(capped_secs))
+            .ok_or_else(|| {
+                LauncherErrorPayload::invalid_input("Durasi kedaluwarsa kode login tidak valid.")
+            })?;
+        let mut interval_secs = code.interval.clamp(1, 60);
 
-        let token_resp = loop {
+        let (mut access_token, mut refresh_token) = loop {
+            if cancelled
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Relaxed))
+            {
+                return Err(LauncherErrorPayload::new(
+                    launcher_types::ErrorCode::Cancelled,
+                    "Proses masuk Microsoft dibatalkan.",
+                ));
+            }
             if std::time::Instant::now() >= deadline {
                 return Err(LauncherErrorPayload::auth_failed(
                     "Kode login kedaluwarsa. Mulai ulang proses masuk.",
@@ -250,8 +341,7 @@ impl MicrosoftAuthService {
 
             let res = self
                 .http
-                .client()
-                .post(TOKEN_URL)
+                .request(Method::POST, TOKEN_URL)?
                 .form(&[
                     ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                     ("client_id", client_id.as_str()),
@@ -266,29 +356,62 @@ impl MicrosoftAuthService {
                     ))
                 })?;
 
-            let text = res.text().await.map_err(|e| {
+            let status = res.status();
+            let retry_after_secs = res
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|s| s.clamp(1, 60));
+
+            let mut text = res.text().await.map_err(|e| {
                 LauncherErrorPayload::network(format!(
                     "Gagal membaca respons token server Microsoft: {}",
                     e
                 ))
             })?;
 
-            let body: TokenResponse = serde_json::from_str(&text).map_err(|e| {
-                LauncherErrorPayload::auth_failed(format!(
-                    "Format respons token tidak valid: {} (isi: {})",
-                    e, text
-                ))
-            })?;
+            if status.as_u16() == 429 || status.is_server_error() {
+                text.zeroize();
+                let wait_secs = retry_after_secs.unwrap_or(interval_secs);
+                Self::sleep_or_cancel(Duration::from_secs(wait_secs), deadline, cancelled.as_ref())
+                    .await?;
+                continue;
+            }
+
+            let body: TokenResponse = match serde_json::from_str(&text) {
+                Ok(parsed) => {
+                    text.zeroize();
+                    parsed
+                }
+                Err(e) => {
+                    text.zeroize();
+                    return Err(LauncherErrorPayload::auth_failed(format!(
+                        "Format respons token tidak valid (HTTP {}): {}",
+                        status, e
+                    )));
+                }
+            };
 
             if let Some(ref err) = body.error {
                 match err.as_str() {
                     "authorization_pending" => {
-                        sleep(Duration::from_secs(interval_secs)).await;
+                        Self::sleep_or_cancel(
+                            Duration::from_secs(interval_secs),
+                            deadline,
+                            cancelled.as_ref(),
+                        )
+                        .await?;
                         continue;
                     }
                     "slow_down" => {
-                        interval_secs += 5;
-                        sleep(Duration::from_secs(interval_secs)).await;
+                        interval_secs = interval_secs.saturating_add(5).min(60);
+                        Self::sleep_or_cancel(
+                            Duration::from_secs(interval_secs),
+                            deadline,
+                            cancelled.as_ref(),
+                        )
+                        .await?;
                         continue;
                     }
                     "expired_token" | "code_expired" => {
@@ -318,25 +441,50 @@ impl MicrosoftAuthService {
             break (access_token, body.refresh_token);
         };
 
-        self.exchange_and_save(token_resp.0, token_resp.1, None)
-            .await
+        let result = self
+            .exchange_and_save(access_token.clone(), refresh_token.clone(), None)
+            .await;
+        access_token.zeroize();
+        if let Some(ref mut rt) = refresh_token {
+            rt.zeroize();
+        }
+        result
     }
 
     pub async fn refresh_session(
         &self,
         account: &Account,
     ) -> Result<Account, LauncherErrorPayload> {
+        let lock = self.refresh_lock_for(&account.id);
+        let _guard = lock.lock().await;
+
+        // If a concurrent caller just refreshed and persisted a non-expiring token, reuse it.
+        if let Some(latest) = self.accounts.get(&account.id) {
+            if Self::is_expiry_still_valid(latest.expires_at.as_deref()) {
+                let secret_key = format!("tokens:{}", latest.id);
+                if let Some(mut secret_data) = self.secrets.get(&secret_key).await {
+                    let parsed = serde_json::from_str::<AccountTokens>(&secret_data);
+                    secret_data.zeroize();
+                    if let Ok(tokens) = parsed {
+                        let mut hydrated = latest;
+                        hydrated.tokens = Some(tokens);
+                        return Ok(hydrated);
+                    }
+                }
+            }
+        }
+
         let client_id = self.client_id().ok_or_else(|| {
             LauncherErrorPayload::provider_not_configured("Client ID Microsoft tidak ditemukan.")
         })?;
 
         let secret_key = format!("tokens:{}", account.id);
-        let stored_secret = self.secrets.get(&secret_key).await;
-        let refresh_token = stored_secret
+        let mut stored_secret = self.secrets.get(&secret_key).await;
+        let mut refresh_token = stored_secret
             .as_deref()
             .and_then(|data| {
                 serde_json::from_str::<AccountTokens>(data)
-                    .map(|t| t.refresh_token)
+                    .map(|t| t.refresh_token.clone())
                     .ok()
                     .or_else(|| Some(data.to_string()))
             })
@@ -346,11 +494,13 @@ impl MicrosoftAuthService {
                     "Sesi akun Microsoft tidak ditemukan. Silakan masuk kembali.",
                 )
             })?;
+        if let Some(ref mut s) = stored_secret {
+            s.zeroize();
+        }
 
         let res = self
             .http
-            .client()
-            .post(TOKEN_URL)
+            .request(Method::POST, TOKEN_URL)?
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("client_id", client_id.as_str()),
@@ -363,37 +513,59 @@ impl MicrosoftAuthService {
                 LauncherErrorPayload::network(format!("Gagal menghubungi server Microsoft: {}", e))
             })?;
 
-        let text = res.text().await.map_err(|e| {
+        let status = res.status();
+        let mut text = res.text().await.map_err(|e| {
             LauncherErrorPayload::network(format!("Gagal membaca respons server Microsoft: {}", e))
         })?;
 
-        let token_resp: TokenResponse = serde_json::from_str(&text).map_err(|e| {
-            LauncherErrorPayload::auth_failed(format!(
-                "Format respons refresh token tidak valid: {} (isi: {})",
-                e, text
-            ))
-        })?;
+        let token_resp: TokenResponse = match serde_json::from_str(&text) {
+            Ok(parsed) => {
+                text.zeroize();
+                parsed
+            }
+            Err(e) => {
+                text.zeroize();
+                refresh_token.zeroize();
+                return Err(LauncherErrorPayload::auth_failed(format!(
+                    "Format respons refresh token tidak valid (HTTP {}): {}",
+                    status, e
+                )));
+            }
+        };
 
         if let Some(err) = token_resp.error {
+            refresh_token.zeroize();
             return Err(LauncherErrorPayload::auth_failed(
                 token_resp.error_description.unwrap_or(err),
             ));
         }
 
-        let access_token = token_resp.access_token.ok_or_else(|| {
-            LauncherErrorPayload::auth_failed(
-                token_resp
-                    .error_description
-                    .unwrap_or_else(|| "Gagal memperbarui token Microsoft.".to_string()),
-            )
-        })?;
+        let mut access_token = match token_resp.access_token {
+            Some(tok) => tok,
+            None => {
+                refresh_token.zeroize();
+                return Err(LauncherErrorPayload::auth_failed(
+                    token_resp
+                        .error_description
+                        .unwrap_or_else(|| "Gagal memperbarui token Microsoft.".to_string()),
+                ));
+            }
+        };
 
-        self.exchange_and_save(
-            access_token,
-            token_resp.refresh_token.or(Some(refresh_token)),
-            Some(account),
-        )
-        .await
+        let next_refresh = token_resp
+            .refresh_token
+            .or_else(|| Some(refresh_token.clone()));
+        refresh_token.zeroize();
+
+        let latest_account = self
+            .accounts
+            .get(&account.id)
+            .unwrap_or_else(|| account.clone());
+        let result = self
+            .exchange_and_save(access_token.clone(), next_refresh, Some(&latest_account))
+            .await;
+        access_token.zeroize();
+        result
     }
 
     async fn exchange_and_save(
@@ -425,8 +597,7 @@ impl MicrosoftAuthService {
     ) -> Result<Account, LauncherErrorPayload> {
         let xbox_res = self
             .http
-            .client()
-            .post(xbox_user_url)
+            .request(Method::POST, xbox_user_url)?
             .json(&serde_json::json!({
                 "Properties": {
                     "AuthMethod": "RPS",
@@ -443,20 +614,28 @@ impl MicrosoftAuthService {
             })?;
 
         let xbox_status = xbox_res.status();
-        let xbox_text = xbox_res.text().await.unwrap_or_default();
+        let mut xbox_text = xbox_res.text().await.unwrap_or_default();
         if !xbox_status.is_success() {
+            xbox_text.zeroize();
             return Err(LauncherErrorPayload::auth_failed(format!(
-                "Xbox Live menolak token Microsoft: {}",
-                xbox_text
+                "Xbox Live menolak token Microsoft (HTTP {}).",
+                xbox_status
             )));
         }
 
-        let xbox_data: XboxUserResponse = serde_json::from_str(&xbox_text).map_err(|e| {
-            LauncherErrorPayload::auth_failed(format!(
-                "Format respons Xbox Live tidak valid: {} (isi: {})",
-                e, xbox_text
-            ))
-        })?;
+        let mut xbox_data: XboxUserResponse = match serde_json::from_str(&xbox_text) {
+            Ok(data) => {
+                xbox_text.zeroize();
+                data
+            }
+            Err(e) => {
+                xbox_text.zeroize();
+                return Err(LauncherErrorPayload::auth_failed(format!(
+                    "Format respons Xbox Live tidak valid: {}",
+                    e
+                )));
+            }
+        };
 
         let first_claim =
             xbox_data.display_claims.xui.first().ok_or_else(|| {
@@ -467,8 +646,7 @@ impl MicrosoftAuthService {
 
         let xsts_res = self
             .http
-            .client()
-            .post(xsts_url)
+            .request(Method::POST, xsts_url)?
             .json(&serde_json::json!({
                 "Properties": {
                     "SandboxId": "RETAIL",
@@ -480,45 +658,44 @@ impl MicrosoftAuthService {
             .send()
             .await
             .map_err(|e| LauncherErrorPayload::network(format!("Gagal menghubungi XSTS: {}", e)))?;
+        xbox_data.token.zeroize();
 
         let xsts_status = xsts_res.status();
-        let xsts_text = xsts_res.text().await.unwrap_or_default();
+        let mut xsts_text = xsts_res.text().await.unwrap_or_default();
         if !xsts_status.is_success() {
-            if xsts_text.contains("2148916238") {
-                return Err(LauncherErrorPayload::auth_failed(
-                    "Akun Microsoft ini merupakan akun anak di bawah umur yang memerlukan persetujuan orang tua (Xbox Family).",
-                ));
+            let err_msg = if xsts_text.contains("2148916238") {
+                "Akun Microsoft ini merupakan akun anak di bawah umur yang memerlukan persetujuan orang tua (Xbox Family).".to_string()
             } else if xsts_text.contains("2148916233") {
-                return Err(LauncherErrorPayload::auth_failed(
-                    "Akun ini belum memiliki profil Xbox Live. Silakan buka xbox.com dan buat gamertag terlebih dahulu.",
-                ));
+                "Akun ini belum memiliki profil Xbox Live. Silakan buka xbox.com dan buat gamertag terlebih dahulu.".to_string()
             } else if xsts_text.contains("2148916235") {
-                return Err(LauncherErrorPayload::auth_failed(
-                    "Xbox Live belum tersedia di negara/wilayah akun Anda.",
-                ));
+                "Xbox Live belum tersedia di negara/wilayah akun Anda.".to_string()
             } else if xsts_text.contains("2148916236") || xsts_text.contains("2148916237") {
-                return Err(LauncherErrorPayload::auth_failed(
-                    "Akun ini memerlukan verifikasi usia dewasa (persyaratan regulasi setempat).",
-                ));
+                "Akun ini memerlukan verifikasi usia dewasa (persyaratan regulasi setempat)."
+                    .to_string()
             } else {
-                return Err(LauncherErrorPayload::auth_failed(format!(
-                    "XSTS menolak token Xbox Live: {}",
-                    xsts_text
-                )));
-            }
+                format!("XSTS menolak token Xbox Live (HTTP {}).", xsts_status)
+            };
+            xsts_text.zeroize();
+            return Err(LauncherErrorPayload::auth_failed(err_msg));
         }
 
-        let xsts_data: XstsResponse = serde_json::from_str(&xsts_text).map_err(|e| {
-            LauncherErrorPayload::auth_failed(format!(
-                "Format respons XSTS tidak valid: {} (isi: {})",
-                e, xsts_text
-            ))
-        })?;
+        let mut xsts_data: XstsResponse = match serde_json::from_str(&xsts_text) {
+            Ok(data) => {
+                xsts_text.zeroize();
+                data
+            }
+            Err(e) => {
+                xsts_text.zeroize();
+                return Err(LauncherErrorPayload::auth_failed(format!(
+                    "Format respons XSTS tidak valid: {}",
+                    e
+                )));
+            }
+        };
 
         let mc_res = self
             .http
-            .client()
-            .post(mc_login_url)
+            .request(Method::POST, mc_login_url)?
             .json(&serde_json::json!({
                 "identityToken": format!("XBL3.0 x={};{}", uhs, xsts_data.token)
             }))
@@ -530,27 +707,35 @@ impl MicrosoftAuthService {
                     e
                 ))
             })?;
+        xsts_data.token.zeroize();
 
         let mc_status = mc_res.status();
-        let mc_text = mc_res.text().await.unwrap_or_default();
+        let mut mc_text = mc_res.text().await.unwrap_or_default();
         if !mc_status.is_success() {
+            mc_text.zeroize();
             return Err(LauncherErrorPayload::auth_failed(format!(
-                "Minecraft Services menolak login: {}",
-                mc_text
+                "Minecraft Services menolak login (HTTP {}).",
+                mc_status
             )));
         }
 
-        let mc_data: MinecraftLoginResponse = serde_json::from_str(&mc_text).map_err(|e| {
-            LauncherErrorPayload::auth_failed(format!(
-                "Format respons Minecraft Services tidak valid: {} (isi: {})",
-                e, mc_text
-            ))
-        })?;
+        let mc_data: MinecraftLoginResponse = match serde_json::from_str(&mc_text) {
+            Ok(data) => {
+                mc_text.zeroize();
+                data
+            }
+            Err(e) => {
+                mc_text.zeroize();
+                return Err(LauncherErrorPayload::auth_failed(format!(
+                    "Format respons Minecraft Services tidak valid: {}",
+                    e
+                )));
+            }
+        };
 
         let profile_res = self
             .http
-            .client()
-            .get(mc_profile_url)
+            .request(Method::GET, mc_profile_url)?
             .header("Authorization", format!("Bearer {}", mc_data.access_token))
             .send()
             .await
@@ -567,44 +752,53 @@ impl MicrosoftAuthService {
                 ));
             }
             return Err(LauncherErrorPayload::auth_failed(format!(
-                "Gagal mengambil profil Minecraft: {}",
-                profile_text
+                "Gagal mengambil profil Minecraft (HTTP {}).",
+                status
             )));
         }
 
-        let profile_data: MinecraftProfileResponse = serde_json::from_str(&profile_text).map_err(|e| {
-            LauncherErrorPayload::auth_failed(format!(
-                "Akun Minecraft tidak ditemukan atau belum memiliki lisensi Java Edition: {} (isi: {})",
-                e, profile_text
-            ))
-        })?;
+        let profile_data: MinecraftProfileResponse =
+            serde_json::from_str(&profile_text).map_err(|e| {
+                LauncherErrorPayload::auth_failed(format!(
+                    "Akun Minecraft tidak ditemukan atau belum memiliki lisensi Java Edition: {}",
+                    e
+                ))
+            })?;
 
         let formatted_uuid = format_uuid(&profile_data.id)?;
-        let account_id = existing_account
+        let dedup_existing = if existing_account.is_some() {
+            None
+        } else {
+            self.accounts
+                .list()
+                .into_iter()
+                .find(|a| a.account_type == AccountType::Microsoft && a.uuid == formatted_uuid)
+        };
+        let matched_account = existing_account.or(dedup_existing.as_ref());
+        let account_id = matched_account
             .map(|a| a.id.clone())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let created_at = existing_account
+        let created_at = matched_account
             .map(|a| a.created_at.clone())
             .unwrap_or_else(|| Utc::now().to_rfc3339());
         let expires_at = Utc::now() + chrono::Duration::seconds(mc_data.expires_in as i64);
 
-        let refresh_token_val = ms_refresh_token.unwrap_or_default();
+        let mut refresh_token_val = ms_refresh_token.unwrap_or_default();
 
         let secret_key = format!("tokens:{}", account_id);
-        let secret_payload = serde_json::to_string(&AccountTokens {
+        let tokens = AccountTokens {
             access_token: mc_data.access_token.clone(),
             refresh_token: refresh_token_val.clone(),
-        })
-        .unwrap_or_default();
-        self.secrets
-            .set(&secret_key, &secret_payload)
-            .await
-            .map_err(|e| {
-                LauncherErrorPayload::auth_failed(format!(
-                    "Gagal menyimpan token ke SecretStore terenkripsi: {}",
-                    e.message
-                ))
-            })?;
+        };
+        let mut secret_payload = serde_json::to_string(&tokens).unwrap_or_default();
+        let save_secret_res = self.secrets.set(&secret_key, &secret_payload).await;
+        secret_payload.zeroize();
+        save_secret_res.map_err(|e| {
+            LauncherErrorPayload::auth_failed(format!(
+                "Gagal menyimpan token ke SecretStore terenkripsi: {}",
+                e.message
+            ))
+        })?;
 
         let active_skin = profile_data
             .skins
@@ -622,8 +816,7 @@ impl MicrosoftAuthService {
         let active_cape = profile_data
             .capes
             .iter()
-            .find(|c| c.state.as_deref() == Some("ACTIVE"))
-            .or_else(|| profile_data.capes.first());
+            .find(|c| c.state.as_deref() == Some("ACTIVE"));
         let active_cape_id = active_cape.and_then(|c| c.id.clone());
         let mut cape_url = active_cape.map(|c| c.url.clone());
         if let Some(ref mut url) = cape_url {
@@ -657,28 +850,45 @@ impl MicrosoftAuthService {
                     if let Ok(target_skin) =
                         launcher_security::safe_subpath(&skins_dir, &format!("{}.png", account_id))
                     {
-                        if let Ok(res) = self.http.get(url).await {
-                            if let Ok(bytes) = res.bytes().await {
-                                let _ = std::fs::write(&target_skin, bytes);
+                        if launcher_security::ensure_descendants_no_symlink(
+                            &skins_dir,
+                            &target_skin,
+                        )
+                        .is_ok()
+                        {
+                            if let Ok(res) = self.http.get(url).await {
+                                if let Ok(bytes) = res.bytes().await {
+                                    let _ = std::fs::write(&target_skin, bytes);
+                                }
                             }
                         }
                     }
                 }
-                if let Some(ref url) = cape_url {
-                    if let Ok(target_cape) = launcher_security::safe_subpath(
-                        &skins_dir,
-                        &format!("{}_cape.png", account_id),
-                    ) {
-                        if let Ok(res) = self.http.get(url).await {
-                            if let Ok(bytes) = res.bytes().await {
-                                let _ = std::fs::write(&target_cape, bytes);
+                if let Ok(target_cape) =
+                    launcher_security::safe_subpath(&skins_dir, &format!("{}_cape.png", account_id))
+                {
+                    if let Some(ref url) = cape_url {
+                        if launcher_security::ensure_descendants_no_symlink(
+                            &skins_dir,
+                            &target_cape,
+                        )
+                        .is_ok()
+                        {
+                            if let Ok(res) = self.http.get(url).await {
+                                if let Ok(bytes) = res.bytes().await {
+                                    let _ = std::fs::write(&target_cape, bytes);
+                                }
                             }
                         }
+                    } else {
+                        let _ =
+                            launcher_security::safe_remove_file_within(&skins_dir, &target_cape);
                     }
                 }
             }
         }
 
+        refresh_token_val.zeroize();
         let account = Account {
             id: account_id,
             username: profile_data.name,
@@ -686,10 +896,7 @@ impl MicrosoftAuthService {
             account_type: AccountType::Microsoft,
             created_at,
             expires_at: Some(expires_at.to_rfc3339()),
-            tokens: Some(AccountTokens {
-                access_token: mc_data.access_token,
-                refresh_token: refresh_token_val,
-            }),
+            tokens: Some(tokens),
             xuid,
             skin_url,
             skin_variant,
@@ -712,32 +919,29 @@ impl MicrosoftAuthService {
         Ok(())
     }
 
-    pub async fn sync_profile(&self, account_id: &str) -> Result<Account, LauncherErrorPayload> {
+    async fn load_account_with_fresh_token(
+        &self,
+        account_id: &str,
+    ) -> Result<(Account, String), LauncherErrorPayload> {
         let mut account = self
             .accounts
             .get(account_id)
             .ok_or_else(|| LauncherErrorPayload::not_found("Akun tidak ditemukan."))?;
 
         let secret_key = format!("tokens:{}", account.id);
-        let secret_data = self.secrets.get(&secret_key).await.ok_or_else(|| {
+        let mut secret_data = self.secrets.get(&secret_key).await.ok_or_else(|| {
             LauncherErrorPayload::auth_failed(
                 "Token autentikasi tidak ditemukan. Silakan login ulang.",
             )
         })?;
 
-        let tokens = serde_json::from_str::<AccountTokens>(&secret_data).map_err(|e| {
+        let tokens = serde_json::from_str::<AccountTokens>(&secret_data);
+        secret_data.zeroize();
+        let tokens = tokens.map_err(|e| {
             LauncherErrorPayload::auth_failed(format!("Gagal membaca token: {}", e))
         })?;
 
-        let needs_refresh = if let Some(ref exp_str) = account.expires_at {
-            if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(exp_str) {
-                exp.with_timezone(&chrono::Utc) <= chrono::Utc::now() + chrono::Duration::minutes(5)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        let needs_refresh = !Self::is_expiry_still_valid(account.expires_at.as_deref());
 
         let access_token = if needs_refresh {
             let refreshed = self.refresh_session(&account).await?;
@@ -746,16 +950,40 @@ impl MicrosoftAuthService {
                 .tokens
                 .as_ref()
                 .map(|t| t.access_token.clone())
-                .unwrap_or(tokens.access_token)
+                .unwrap_or_else(|| tokens.access_token.clone())
         } else {
-            tokens.access_token
+            tokens.access_token.clone()
         };
 
+        Ok((account, access_token))
+    }
+
+    async fn refresh_bearer_for_retry(
+        &self,
+        account: &mut Account,
+    ) -> Result<String, LauncherErrorPayload> {
+        let refreshed = self.refresh_session(account).await?;
+        let next_tok = refreshed
+            .tokens
+            .as_ref()
+            .map(|t| t.access_token.clone())
+            .ok_or_else(|| {
+                LauncherErrorPayload::auth_failed(
+                    "Token akses tidak tersedia setelah pembaruan sesi.",
+                )
+            })?;
+        *account = refreshed;
+        Ok(next_tok)
+    }
+
+    pub async fn sync_profile(&self, account_id: &str) -> Result<Account, LauncherErrorPayload> {
+        let (mut account, mut access_token) =
+            self.load_account_with_fresh_token(account_id).await?;
+
         let profile_url = "https://api.minecraftservices.com/minecraft/profile";
-        let resp = self
+        let mut resp = self
             .http
-            .client()
-            .get(profile_url)
+            .request(Method::GET, profile_url)?
             .header("Authorization", format!("Bearer {}", access_token))
             .send()
             .await
@@ -765,6 +993,22 @@ impl MicrosoftAuthService {
                     e
                 ))
             })?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            access_token = self.refresh_bearer_for_retry(&mut account).await?;
+            resp = self
+                .http
+                .request(Method::GET, profile_url)?
+                .header("Authorization", format!("Bearer {}", access_token))
+                .send()
+                .await
+                .map_err(|e| {
+                    LauncherErrorPayload::network(format!(
+                        "Gagal menghubungi Minecraft profile API: {}",
+                        e
+                    ))
+                })?;
+        }
 
         if !resp.status().is_success() {
             return Err(LauncherErrorPayload::auth_failed(format!(
@@ -827,9 +1071,16 @@ impl MicrosoftAuthService {
                     if let Ok(target_skin) =
                         launcher_security::safe_subpath(&skins_dir, &format!("{}.png", account.id))
                     {
-                        if let Ok(res) = self.http.get(url_str).await {
-                            if let Ok(bytes) = res.bytes().await {
-                                let _ = std::fs::write(&target_skin, bytes);
+                        if launcher_security::ensure_descendants_no_symlink(
+                            &skins_dir,
+                            &target_skin,
+                        )
+                        .is_ok()
+                        {
+                            if let Ok(res) = self.http.get(url_str).await {
+                                if let Ok(bytes) = res.bytes().await {
+                                    let _ = std::fs::write(&target_skin, bytes);
+                                }
                             }
                         }
                     }
@@ -839,9 +1090,16 @@ impl MicrosoftAuthService {
                     launcher_security::safe_subpath(&skins_dir, &format!("{}_cape.png", account.id))
                 {
                     if let Some(url_str) = cape_url.as_deref() {
-                        if let Ok(res) = self.http.get(url_str).await {
-                            if let Ok(bytes) = res.bytes().await {
-                                let _ = std::fs::write(&target_cape, bytes);
+                        if launcher_security::ensure_descendants_no_symlink(
+                            &skins_dir,
+                            &target_cape,
+                        )
+                        .is_ok()
+                        {
+                            if let Ok(res) = self.http.get(url_str).await {
+                                if let Ok(bytes) = res.bytes().await {
+                                    let _ = std::fs::write(&target_cape, bytes);
+                                }
                             }
                         }
                     } else {
@@ -871,21 +1129,8 @@ impl MicrosoftAuthService {
         account_id: &str,
         cape_id: Option<&str>,
     ) -> Result<Account, LauncherErrorPayload> {
-        let mut account = self
-            .accounts
-            .get(account_id)
-            .ok_or_else(|| LauncherErrorPayload::not_found("Akun tidak ditemukan."))?;
-
-        let secret_key = format!("tokens:{}", account.id);
-        let secret_data = self.secrets.get(&secret_key).await.ok_or_else(|| {
-            LauncherErrorPayload::auth_failed(
-                "Token autentikasi tidak ditemukan. Silakan login ulang.",
-            )
-        })?;
-
-        let tokens = serde_json::from_str::<AccountTokens>(&secret_data).map_err(|e| {
-            LauncherErrorPayload::auth_failed(format!("Gagal membaca token: {}", e))
-        })?;
+        let (mut account, mut access_token) =
+            self.load_account_with_fresh_token(account_id).await?;
 
         launcher_security::validate_instance_id(&account.id)?;
         let skins_dir = self.paths.root.join("skins");
@@ -893,14 +1138,13 @@ impl MicrosoftAuthService {
         let target_cape =
             launcher_security::safe_subpath(&skins_dir, &format!("{}_cape.png", account.id))?;
 
+        let api_url = "https://api.minecraftservices.com/minecraft/profile/capes/active";
         if let Some(cid) = cape_id {
-            let api_url = "https://api.minecraftservices.com/minecraft/profile/capes/active";
             let req_body = serde_json::json!({ "capeId": cid });
-            let resp = self
+            let mut resp = self
                 .http
-                .client()
-                .put(api_url)
-                .header("Authorization", format!("Bearer {}", tokens.access_token))
+                .request(Method::PUT, api_url)?
+                .header("Authorization", format!("Bearer {}", access_token))
                 .json(&req_body)
                 .send()
                 .await
@@ -910,6 +1154,23 @@ impl MicrosoftAuthService {
                         e
                     ))
                 })?;
+
+            if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                access_token = self.refresh_bearer_for_retry(&mut account).await?;
+                resp = self
+                    .http
+                    .request(Method::PUT, api_url)?
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .json(&req_body)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        LauncherErrorPayload::network(format!(
+                            "Gagal menghubungi Mojang cape API: {}",
+                            e
+                        ))
+                    })?;
+            }
 
             if !resp.status().is_success() {
                 return Err(LauncherErrorPayload::auth_failed(format!(
@@ -932,28 +1193,59 @@ impl MicrosoftAuthService {
             account.cape_url = matching_url.clone();
 
             if let Some(ref url) = matching_url {
-                if let Ok(res) = self.http.get(url).await {
-                    if let Ok(bytes) = res.bytes().await {
-                        let _ = std::fs::write(&target_cape, bytes);
+                if launcher_security::ensure_descendants_no_symlink(&skins_dir, &target_cape)
+                    .is_ok()
+                {
+                    if let Ok(res) = self.http.get(url).await {
+                        if let Ok(bytes) = res.bytes().await {
+                            let _ = std::fs::write(&target_cape, bytes);
+                        }
                     }
                 }
             }
         } else {
-            let api_url = "https://api.minecraftservices.com/minecraft/profile/capes/active";
-            let _ = self
+            let mut resp = self
                 .http
-                .client()
-                .delete(api_url)
-                .header("Authorization", format!("Bearer {}", tokens.access_token))
+                .request(Method::DELETE, api_url)?
+                .header("Authorization", format!("Bearer {}", access_token))
                 .send()
-                .await;
+                .await
+                .map_err(|e| {
+                    LauncherErrorPayload::network(format!(
+                        "Gagal menghubungi Mojang cape API: {}",
+                        e
+                    ))
+                })?;
+
+            if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                access_token = self.refresh_bearer_for_retry(&mut account).await?;
+                resp = self
+                    .http
+                    .request(Method::DELETE, api_url)?
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        LauncherErrorPayload::network(format!(
+                            "Gagal menghubungi Mojang cape API: {}",
+                            e
+                        ))
+                    })?;
+            }
+
+            if !resp.status().is_success() {
+                return Err(LauncherErrorPayload::auth_failed(format!(
+                    "Gagal menonaktifkan jubah di server Mojang: status {}",
+                    resp.status()
+                )));
+            }
 
             for c in &mut account.capes {
                 c.state = "INACTIVE".to_string();
             }
             account.active_cape_id = None;
             account.cape_url = None;
-            let _ = std::fs::remove_file(&target_cape);
+            let _ = launcher_security::safe_remove_file_within(&skins_dir, &target_cape);
         }
 
         let mut account_for_disk = account.clone();
@@ -1009,7 +1301,7 @@ mod tests {
         let _ = std::fs::remove_file(&paths.accounts_file);
         std::fs::create_dir_all(&paths.accounts_file).unwrap();
 
-        let service = MicrosoftAuthService::new(paths, accounts, secrets);
+        let service = MicrosoftAuthService::new_loopback_test(paths, accounts, secrets);
         let err = service
             .exchange_and_save_with_urls(
                 "ms-access".to_string(),
@@ -1028,7 +1320,119 @@ mod tests {
             );
         assert_eq!(err.code, launcher_types::ErrorCode::Internal);
 
-        let _ = HttpClient::new().get(&format!("{}/__shutdown", base)).await;
+        let _ = HttpClient::new_loopback_test()
+            .get(&format!("{}/__shutdown", base))
+            .await;
         let _ = handle.join();
+    }
+
+    #[tokio::test]
+    async fn test_h10_relogin_deduplicates_uuid_and_clears_inactive_cape() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+
+        let _handle = std::thread::spawn(move || {
+            for _ in 0..8 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf);
+                    let req = String::from_utf8_lossy(&buf);
+                    let body = if req.contains("POST /xbox") || req.contains("POST /xsts") {
+                        r#"{"Token":"tkn","DisplayClaims":{"xui":[{"uhs":"u1","xid":"x1"}]}}"#
+                    } else if req.contains("POST /mc-login") {
+                        r#"{"access_token":"mc-access","expires_in":3600}"#
+                    } else if req.contains("GET /mc-profile") {
+                        r#"{"id":"5627dd98e6be3c21b8a8e92344183641","name":"Steve","skins":[],"capes":[{"id":"c1","state":"INACTIVE","url":"https://textures.minecraft.net/cape.png"}]}"#
+                    } else {
+                        break;
+                    };
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(hdr.as_bytes());
+                    let _ = stream.write_all(body.as_bytes());
+                }
+            }
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DataPaths::new(tmp.path());
+        let accounts = AccountsStore::new(paths.clone());
+        let secrets = SecretStore::new(paths.secrets_file.clone());
+        let service =
+            MicrosoftAuthService::new_loopback_test(paths.clone(), accounts.clone(), secrets);
+
+        let first = service
+            .exchange_and_save_with_urls(
+                "ms-access".to_string(),
+                Some("ms-refresh".to_string()),
+                None,
+                (
+                    &format!("{}/xbox", base),
+                    &format!("{}/xsts", base),
+                    &format!("{}/mc-login", base),
+                    &format!("{}/mc-profile", base),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(first.active_cape_id.is_none());
+        assert!(first.cape_url.is_none());
+
+        let stale_cape = paths
+            .root
+            .join("skins")
+            .join(format!("{}_cape.png", first.id));
+        std::fs::create_dir_all(stale_cape.parent().unwrap()).unwrap();
+        std::fs::write(&stale_cape, b"stale").unwrap();
+
+        let second = service
+            .exchange_and_save_with_urls(
+                "ms-access-2".to_string(),
+                Some("ms-refresh-2".to_string()),
+                None,
+                (
+                    &format!("{}/xbox", base),
+                    &format!("{}/xsts", base),
+                    &format!("{}/mc-login", base),
+                    &format!("{}/mc-profile", base),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.id, first.id);
+        assert_eq!(accounts.list().len(), 1);
+        assert!(!stale_cape.exists());
+    }
+
+    #[tokio::test]
+    async fn test_h10_expiry_missing_or_corrupt_triggers_refresh_and_cancel_aborts_login() {
+        assert!(!MicrosoftAuthService::is_expiry_still_valid(None));
+        assert!(!MicrosoftAuthService::is_expiry_still_valid(Some(
+            "not-a-date"
+        )));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DataPaths::new(tmp.path());
+        let accounts = AccountsStore::new(paths.clone());
+        let secrets = SecretStore::new(paths.secrets_file.clone());
+        let service = MicrosoftAuthService::new_loopback_test(paths, accounts, secrets);
+        let cancel = Arc::new(AtomicBool::new(true));
+        let err = service
+            .complete_login_with_cancel(
+                DeviceCodeInfo {
+                    device_code: "dev".to_string(),
+                    user_code: "USER".to_string(),
+                    verification_uri: "https://microsoft.com/link".to_string(),
+                    expires_in: u64::MAX,
+                    interval: 5,
+                },
+                Some(cancel),
+            )
+            .await
+            .expect_err("Cancelled login must return Cancelled immediately");
+        assert_eq!(err.code, launcher_types::ErrorCode::Cancelled);
     }
 }

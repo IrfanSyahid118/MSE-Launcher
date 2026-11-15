@@ -2,6 +2,8 @@ export interface ProgressEvent {
   stage: string
   completed: number
   total: number
+  /** Detail berkas atau aktivitas berjalan untuk baris konsol unduhan. */
+  detail?: string | undefined
   /**
    * Indeks tahap dalam seluruh alur kerja (0, 1, 2, ...). UI memakainya agar
    * persen tidak melompat mundur saat berganti tahap unduhan.

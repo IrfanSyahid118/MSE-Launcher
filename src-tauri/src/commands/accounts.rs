@@ -1,8 +1,8 @@
 use crate::state::AppState;
 use launcher_types::{
-    Account, DeviceCodeInfo, InstallSkinResourcePackRequest, InstallSkinResourcePackResult,
-    LauncherErrorPayload, SetActiveCapeRequest, SettingsPatch, SyncMinecraftProfileRequest,
-    UpdateAccountSkinRequest,
+    Account, AccountType, DeviceCodeInfo, InstallSkinResourcePackRequest,
+    InstallSkinResourcePackResult, LauncherErrorPayload, SetActiveCapeRequest, SettingsPatch,
+    SyncMinecraftProfileRequest, UpdateAccountSkinRequest,
 };
 
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
@@ -270,8 +270,22 @@ pub async fn auth_begin_microsoft(
 pub async fn auth_complete_microsoft(
     state: tauri::State<'_, AppState>,
     req: DeviceCodeInfo,
+    task_id: Option<String>,
 ) -> Result<Account, LauncherErrorPayload> {
-    let account = state.auth.complete_login(req).await?;
+    let (_guard, cancel_flag) = if let Some(tid) = task_id.filter(|s| !s.trim().is_empty()) {
+        let flag = crate::commands::launch::register_task(&tid);
+        (
+            Some(crate::commands::launch::ActiveTaskGuard::new(tid)),
+            Some(flag),
+        )
+    } else {
+        (None, None)
+    };
+
+    let account = state
+        .auth
+        .complete_login_with_cancel(req, cancel_flag)
+        .await?;
 
     let current_settings = state.settings.get();
     if current_settings.active_account_id.is_none() {
@@ -291,6 +305,18 @@ pub async fn auth_sign_out(
 ) -> Result<(), LauncherErrorPayload> {
     let _ = state.auth.sign_out(&account_id).await;
     state.accounts.remove(&account_id)?;
+
+    if launcher_security::validate_instance_id(&account_id).is_ok() {
+        let skins_dir = state.paths.root.join("skins");
+        for file in [
+            format!("{account_id}.png"),
+            format!("{account_id}_cape.png"),
+        ] {
+            if let Ok(path) = launcher_security::safe_subpath(&skins_dir, &file) {
+                let _ = launcher_security::safe_remove_file_within(&skins_dir, &path);
+            }
+        }
+    }
 
     let current_settings = state.settings.get();
     if current_settings.active_account_id.as_deref() == Some(&account_id) {
@@ -333,7 +359,7 @@ fn resolve_skin_bytes_for_account(
 }
 
 #[tauri::command]
-pub fn accounts_install_skin_resourcepack(
+pub fn accounts_install_skin_resource_pack(
     state: tauri::State<AppState>,
     req: InstallSkinResourcePackRequest,
 ) -> Result<InstallSkinResourcePackResult, LauncherErrorPayload> {
@@ -444,7 +470,7 @@ pub(crate) fn export_skin_resourcepack_to_dir(
 }
 
 #[tauri::command]
-pub fn accounts_export_skin_resourcepack(
+pub fn accounts_export_skin_resource_pack(
     state: tauri::State<AppState>,
     account_id: String,
     destination_path: String,
@@ -464,8 +490,12 @@ pub async fn accounts_sync_minecraft(
 ) -> Result<Account, LauncherErrorPayload> {
     let mut updated = state.auth.sync_profile(&req.account_id).await?;
     let skins_dir = state.paths.root.join("skins");
-    enrich_account(&mut updated, &skins_dir);
-    Ok(updated)
+    tokio::task::spawn_blocking(move || {
+        enrich_account(&mut updated, &skins_dir);
+        updated
+    })
+    .await
+    .map_err(|e| LauncherErrorPayload::internal(format!("Gagal memproses data skin akun: {}", e)))
 }
 
 pub(crate) fn set_custom_cape_with_store(
@@ -510,20 +540,60 @@ pub async fn accounts_set_active_cape(
 ) -> Result<Account, LauncherErrorPayload> {
     let skins_dir = state.paths.root.join("skins");
     if let Some(custom_data) = req.custom_cape_data {
-        return set_custom_cape_with_store(
-            &state.accounts,
-            &skins_dir,
-            &req.account_id,
-            &custom_data,
-        );
+        let accounts = state.accounts.clone();
+        let account_id = req.account_id;
+        return tokio::task::spawn_blocking(move || {
+            set_custom_cape_with_store(&accounts, &skins_dir, &account_id, &custom_data)
+        })
+        .await
+        .map_err(|e| {
+            LauncherErrorPayload::internal(format!("Gagal memproses jubah kustom: {}", e))
+        })?;
+    }
+
+    let requested_cape = req
+        .cape_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if requested_cape.is_none() {
+        if let Some(mut acc) = state.accounts.get(&req.account_id) {
+            if acc.account_type == AccountType::Offline {
+                acc.cape_url = None;
+                acc.active_cape_id = None;
+                state.accounts.save_account(acc.clone())?;
+                if launcher_security::validate_instance_id(&acc.id).is_ok() {
+                    if let Ok(cape_path) =
+                        launcher_security::safe_subpath(&skins_dir, &format!("{}_cape.png", acc.id))
+                    {
+                        let _ = launcher_security::safe_remove_file_within(&skins_dir, &cape_path);
+                    }
+                }
+                enrich_account(&mut acc, &skins_dir);
+                return Ok(acc);
+            }
+        }
     }
 
     let mut updated = state
         .auth
-        .set_active_cape(&req.account_id, req.cape_id.as_deref())
+        .set_active_cape(&req.account_id, requested_cape)
         .await?;
-    enrich_account(&mut updated, &skins_dir);
-    Ok(updated)
+    if updated.active_cape_id.is_none()
+        && launcher_security::validate_instance_id(&updated.id).is_ok()
+    {
+        if let Ok(cape_path) =
+            launcher_security::safe_subpath(&skins_dir, &format!("{}_cape.png", updated.id))
+        {
+            let _ = launcher_security::safe_remove_file_within(&skins_dir, &cape_path);
+        }
+    }
+    tokio::task::spawn_blocking(move || {
+        enrich_account(&mut updated, &skins_dir);
+        updated
+    })
+    .await
+    .map_err(|e| LauncherErrorPayload::internal(format!("Gagal memproses data jubah akun: {}", e)))
 }
 
 #[cfg(test)]

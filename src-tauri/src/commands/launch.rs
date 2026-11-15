@@ -69,10 +69,11 @@ pub async fn launch_start(
             inst.name.clone(),
             inst.minecraft_version.clone(),
             format!("{:?}", inst.loader.loader_type),
+            inst.icon_url.clone(),
         )
     });
 
-    if let Some((ref name, ref mc_ver, ref loader)) = instance_info {
+    if let Some((ref name, ref mc_ver, ref loader, _)) = instance_info {
         logs.record_entry(
             "system",
             format!(
@@ -138,24 +139,25 @@ pub async fn launch_start(
 
         let app3 = app_clone.clone();
         let task_id3 = task_id_clone.clone();
-        let on_progress = move |stage: String, completed: u32, total: u32| {
+        let on_progress = move |p: launcher_launch::LaunchProgress| {
             let _ = app3.emit(
                 "task:progress",
                 json!({
                     "taskId": task_id3,
                     "progress": {
-                        "stage": stage,
-                        "completed": completed,
-                        "total": total,
-                        "stageIndex": completed.saturating_sub(1),
-                        "stageCount": total,
+                        "stage": p.stage,
+                        "detail": p.detail,
+                        "completed": p.completed,
+                        "total": p.total,
+                        "stageIndex": p.stage_index,
+                        "stageCount": p.stage_count,
                     }
                 }),
             );
         };
 
         match launch_service
-            .launch(
+            .launch_with_progress(
                 &inst_id_clone,
                 &version_id,
                 server_address.as_deref(),
@@ -171,8 +173,8 @@ pub async fn launch_start(
                     "stdout",
                     format!("Game berhasil diluncurkan (PID {}).", pid),
                 );
-                if let Some((name, ver, loader)) = instance_info {
-                    discord.set_playing(name, ver, loader);
+                if let Some((name, ver, loader, icon_url)) = instance_info {
+                    discord.set_playing(name, ver, loader, icon_url);
                 }
                 let _ = app_clone.emit(
                     "task:done",

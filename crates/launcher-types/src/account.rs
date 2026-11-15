@@ -7,7 +7,9 @@ pub enum AccountType {
     Offline,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize, zeroize::ZeroizeOnDrop,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountTokens {
     pub access_token: String,
@@ -34,7 +36,8 @@ pub struct Account {
     pub account_type: AccountType,
     pub created_at: String,
     pub expires_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Token hanya boleh hidup di secret store dan memori proses, tidak pernah di serialisasi ke disk maupun IPC.
+    #[serde(skip_serializing)]
     pub tokens: Option<AccountTokens>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xuid: Option<String>,
@@ -99,9 +102,14 @@ pub struct InstallSkinResourcePackResult {
     pub pack_file_name: String,
 }
 
+fn default_schema_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountsFile {
+    #[serde(default = "default_schema_version")]
     pub schema_version: u32,
     #[serde(default)]
     pub accounts: Vec<Account>,

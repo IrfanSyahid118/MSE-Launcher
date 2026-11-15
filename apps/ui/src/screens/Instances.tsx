@@ -1,11 +1,13 @@
 import { Suspense, lazy, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { Box, Compass, LayoutGrid, List, Play, Plus, Search, Settings2 } from 'lucide-react'
 import type { Instance } from '@mc/shared'
 import { useI18n } from '../i18n'
 import { useInstances } from '../api/queries'
 import { errorMessage } from '../api/launcher'
+import { registerLaunchTask } from '../api/task-registration'
 import { useAppStore } from '../stores/app-store'
 import { GlassButton } from '../components/GlassButton/GlassButton'
 import { InstanceCard } from '../components/InstanceCard/InstanceCard'
@@ -21,14 +23,16 @@ const CreateInstanceDialog = lazy(() =>
 export function Instances(): ReactNode {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const instancesQuery = useInstances()
   const [search, setSearch] = useState('')
   const [selectedLoader, setSelectedLoader] = useState<string>('all')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [createOpen, setCreateOpen] = useState(false)
   const pushToast = useAppStore((state) => state.pushToast)
-  const setLaunchTaskId = useAppStore((state) => state.setLaunchTaskId)
   const setLaunchInstanceId = useAppStore((state) => state.setLaunchInstanceId)
+  const setLastLaunchInstanceId = useAppStore((state) => state.setLastLaunchInstanceId)
+  const setLaunchProgress = useAppStore((state) => state.setLaunchProgress)
   const launchTaskId = useAppStore((state) => state.launchTaskId)
   const launchInstanceId = useAppStore((state) => state.launchInstanceId)
   const isGameRunning = useAppStore((state) => state.isGameRunning)
@@ -57,18 +61,24 @@ export function Instances(): ReactNode {
     }
     launchInFlightRef.current = true
     setStartingInstanceId(instance.id)
+    setLaunchInstanceId(instance.id)
+    setLastLaunchInstanceId(instance.id)
+    setLaunchProgress({ stage: t('home.launching'), completed: 0, total: 1000 })
     try {
       const res = await window.launcher.invoke('launch:start', {
         instanceId: instance.id,
         versionId: instance.minecraftVersion,
       })
       if (!res.ok) {
+        setLaunchInstanceId(null)
+        setLaunchProgress(null)
         pushToast(res.error.message, 'error')
         return
       }
-      setLaunchInstanceId(instance.id)
-      setLaunchTaskId(res.data.taskId)
+      registerLaunchTask(res.data.taskId, queryClient)
     } catch (err) {
+      setLaunchInstanceId(null)
+      setLaunchProgress(null)
       pushToast(errorMessage(err, t('error.unknown')), 'error')
     } finally {
       launchInFlightRef.current = false
@@ -172,21 +182,42 @@ export function Instances(): ReactNode {
         <div className={styles.empty}>
           <p className={styles.emptyText}>{t('common.loading')}</p>
         </div>
+      ) : instancesQuery.isError ? (
+        <div className={styles.empty} role="alert">
+          <h2 className={styles.emptyText}>
+            {t('instances.loadFailed', {
+              error: errorMessage(instancesQuery.error, t('common.unknown')),
+            })}
+          </h2>
+          <div className={styles.emptyActions}>
+            <GlassButton
+              variant="primary"
+              onClick={() => void instancesQuery.refetch()}
+            >
+              {t('common.retry')}
+            </GlassButton>
+          </div>
+        </div>
       ) : filtered.length > 0 ? (
         viewMode === 'grid' ? (
           <div className={styles.grid} data-testid="instances-grid">
-            {filtered.map((instance) => (
-              <InstanceCard
-                key={instance.id}
-                instance={instance}
-                isLaunching={
-                  startingInstanceId === instance.id ||
-                  Boolean(launchTaskId && launchInstanceId === instance.id) ||
-                  (isGameRunning && launchInstanceId === instance.id)
-                }
-                onLaunch={handleLaunch}
-              />
-            ))}
+            {filtered.map((instance) => {
+              const instanceRunning = Boolean(isGameRunning && launchInstanceId === instance.id)
+              const instanceLaunching = Boolean(
+                !instanceRunning &&
+                  (startingInstanceId === instance.id ||
+                    Boolean(launchTaskId && launchInstanceId === instance.id)),
+              )
+              return (
+                <InstanceCard
+                  key={instance.id}
+                  instance={instance}
+                  isLaunching={instanceLaunching}
+                  isRunning={instanceRunning}
+                  onLaunch={handleLaunch}
+                />
+              )
+            })}
           </div>
         ) : (
           <div className={styles.listView} data-testid="instances-grid">
@@ -245,7 +276,12 @@ export function Instances(): ReactNode {
                       handleLaunch(instance)
                     }}
                   >
-                    {t('instances.play')}
+                    {isGameRunning && launchInstanceId === instance.id
+                      ? t('home.running')
+                      : (startingInstanceId === instance.id ||
+                            (launchTaskId && launchInstanceId === instance.id))
+                        ? t('home.launching')
+                        : t('instances.play')}
                   </GlassButton>
                 </div>
               </div>

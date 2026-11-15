@@ -1,12 +1,12 @@
 {
   "name": "mse-launcher",
-  "version": "1.0.0-beta",
+  "version": "1.0.0",
   "license": "GPL-3.0-or-later",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.16.1",
   "engines": {
-    "node": ">=26"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "tauri dev",

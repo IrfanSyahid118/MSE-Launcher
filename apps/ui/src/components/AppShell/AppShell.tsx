@@ -1,13 +1,23 @@
-import { Suspense, lazy, useEffect, useMemo } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef } from 'react'
 import type { ReactNode } from 'react'
-import type { CleanupSummary, LogLine } from '@mc/shared'
+import type { LogLine } from '@mc/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import { Navigate, Route, Routes, useLocation } from 'react-router'
 import { AnimatePresence, motion } from 'motion/react'
 import { useI18n } from '../../i18n'
 import { invoke } from '../../api/launcher'
 import { queryKeys, useActiveAccount, useInstances } from '../../api/queries'
-import { useAppStore } from '../../stores/app-store'
+import {
+  handleCleanupTaskDone,
+  handleLaunchTaskDone,
+  handleLaunchTaskError,
+} from '../../api/task-registration'
+import {
+  bufferTaskDone,
+  bufferTaskError,
+  bufferTaskProgress,
+  useAppStore,
+} from '../../stores/app-store'
 import type { BreadcrumbSegment } from '../../stores/app-store'
 import { GlassSidebar } from '../GlassSidebar/GlassSidebar'
 import { HintProvider } from '../Hint/Hint'
@@ -45,22 +55,12 @@ const Screenshots = lazy(() =>
   import('../../screens/Screenshots').then((m) => ({ default: m.Screenshots })),
 )
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`
-  }
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
-}
-
 function ShellLayout(): ReactNode {
   const { t } = useI18n()
+  const tRef = useRef(t)
+  useEffect(() => {
+    tRef.current = t
+  }, [t])
   const location = useLocation()
   const queryClient = useQueryClient()
   const { account, isLoading } = useActiveAccount()
@@ -68,11 +68,9 @@ function ShellLayout(): ReactNode {
   const pushConsoleLines = useAppStore((state) => state.pushConsoleLines)
   const pushLauncherLogs = useAppStore((state) => state.pushLauncherLogs)
   const setLauncherLogs = useAppStore((state) => state.setLauncherLogs)
-  const setLastLaunchError = useAppStore((state) => state.setLastLaunchError)
   const setLaunchTaskId = useAppStore((state) => state.setLaunchTaskId)
   const setLaunchInstanceId = useAppStore((state) => state.setLaunchInstanceId)
   const setLaunchProgress = useAppStore((state) => state.setLaunchProgress)
-  const setCleanupTaskId = useAppStore((state) => state.setCleanupTaskId)
   const setIsGameRunning = useAppStore((state) => state.setIsGameRunning)
   const pushToast = useAppStore((state) => state.pushToast)
   const upsertInstallJob = useAppStore((state) => state.upsertInstallJob)
@@ -111,6 +109,7 @@ function ShellLayout(): ReactNode {
   useEffect(() => {
     let menuAnnounced = false
     let realmsNoted = false
+    const instanceRefreshedTasks = new Set<string>()
     const systemLine = (line: string): LogLine => ({
       stream: 'system',
       line,
@@ -118,74 +117,69 @@ function ShellLayout(): ReactNode {
     })
 
     const offProgress = window.launcher.on('task:progress', ({ taskId, progress }) => {
-      if (useAppStore.getState().launchTaskId === taskId) {
+      const state = useAppStore.getState()
+      if (state.launchTaskId === taskId) {
         setLaunchProgress(progress)
         return
       }
-      const jobs = useAppStore.getState().installJobs
-      const job = jobs.find((entry) => entry.taskId === taskId)
+      const job = state.installJobs.find((entry) => entry.taskId === taskId)
       if (job) {
+        if (!instanceRefreshedTasks.has(taskId) && (progress.stageIndex ?? 0) >= 1) {
+          instanceRefreshedTasks.add(taskId)
+          void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+        }
         upsertInstallJob({ taskId, title: job.title, progress })
+        return
+      }
+      if (state.cleanupTaskId !== taskId) {
+        bufferTaskProgress(taskId, progress)
       }
     })
     const offDone = window.launcher.on('task:done', ({ taskId, result }) => {
-      if (useAppStore.getState().cleanupTaskId === taskId) {
-        setCleanupTaskId(null)
-        const summary = result as CleanupSummary | undefined
-        pushToast(
-          t('instances.cleanupDone', {
-            files: summary?.removedFiles ?? 0,
-            size: formatBytes(summary?.freedBytes ?? 0),
-          }),
-        )
+      const state = useAppStore.getState()
+      if (state.cleanupTaskId === taskId) {
+        handleCleanupTaskDone(result, tRef.current)
         return
       }
-      if (useAppStore.getState().launchTaskId === taskId) {
-        setLaunchTaskId(null)
-        setLaunchProgress(null)
-        setIsGameRunning(true)
-        // Refresh instances so updated lastPlayedAt and version appear.
-        void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+      if (state.launchTaskId === taskId) {
+        handleLaunchTaskDone(queryClient)
         return
       }
-      const jobs = useAppStore.getState().installJobs
-      const job = jobs.find((entry) => entry.taskId === taskId)
+      const job = state.installJobs.find((entry) => entry.taskId === taskId)
       if (job) {
+        instanceRefreshedTasks.delete(taskId)
         void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
-        pushToast(t('browse.installDone', { title: job.title }))
+        pushToast(tRef.current('browse.installDone', { title: job.title }))
         removeInstallJob(taskId)
         void result
+        return
       }
+      bufferTaskDone(taskId, result)
     })
     const offError = window.launcher.on('task:error', ({ taskId, error }) => {
       void invoke('logs:appendClient', {
         stream: 'stderr',
         line: `Task error (${taskId}): [${error.code}] ${error.message}`,
       }).catch(() => {})
-      if (useAppStore.getState().cleanupTaskId === taskId) {
-        setCleanupTaskId(null)
+      const state = useAppStore.getState()
+      if (state.cleanupTaskId === taskId) {
+        state.setCleanupTaskId(null)
         pushToast(error.message, 'error')
         return
       }
-      if (useAppStore.getState().launchTaskId === taskId) {
-        setLaunchTaskId(null)
-        setLaunchProgress(null)
-        setLaunchInstanceId(null)
-        const time = new Date().toISOString()
-        setLastLaunchError({ message: error.message, time })
-        pushConsoleLines([{
-          stream: 'stderr',
-          line: error.message,
-          time,
-        }])
-        pushToast(error.message, 'error')
+      if (state.launchTaskId === taskId) {
+        handleLaunchTaskError(error)
         return
       }
-      const job = useAppStore.getState().installJobs.find((entry) => entry.taskId === taskId)
+      const job = state.installJobs.find((entry) => entry.taskId === taskId)
       if (job) {
+        instanceRefreshedTasks.delete(taskId)
+        void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
         pushToast(`${job.title}: ${error.message}`, 'error')
         removeInstallJob(taskId)
+        return
       }
+      bufferTaskError(taskId, error)
     })
     void invoke('logs:launcherHistory', undefined)
       .then((history) => {
@@ -220,12 +214,12 @@ function ShellLayout(): ReactNode {
         // Game may stop logging once the main menu loads; add a ready marker.
         if (!menuAnnounced && /textures-atlas|Narrator library/i.test(line.line)) {
           menuAnnounced = true
-          extras.push(systemLine(t('console.menuReached')))
+          extras.push(systemLine(tRef.current('console.menuReached')))
         }
         // Offline accounts always trigger benign Realms authorization warnings.
         if (!realmsNoted && /Could not authorize you against Realms server|Failed to parse into SignedJWT/i.test(line.line)) {
           realmsNoted = true
-          extras.push(systemLine(t('console.realmsIgnored')))
+          extras.push(systemLine(tRef.current('console.realmsIgnored')))
         }
       }
       const combined = extras.length > 0 ? [...incoming, ...extras] : incoming
@@ -238,7 +232,11 @@ function ShellLayout(): ReactNode {
       }
       pushConsoleLines(combined)
     })
-    const offExit = window.launcher.on('game:exit', ({ code }) => {
+    const offExit = window.launcher.on('game:exit', ({ instanceId, code }) => {
+      const activeLaunchId = useAppStore.getState().launchInstanceId
+      if (activeLaunchId !== null && instanceId !== activeLaunchId) {
+        return
+      }
       flushDeferredLogs()
       menuAnnounced = false
       realmsNoted = false
@@ -247,9 +245,11 @@ function ShellLayout(): ReactNode {
       setLaunchInstanceId(null)
       setIsGameRunning(false)
       const time = new Date().toISOString()
-      const exitMsg = t('console.exitCode', { code: code === null ? t('common.unknown') : code })
+      const exitMsg = tRef.current('console.exitCode', {
+        code: code === null ? tRef.current('common.unknown') : code,
+      })
       if (code !== null && code !== 0) {
-        setLastLaunchError({ message: exitMsg, time })
+        useAppStore.getState().setLastLaunchError({ message: exitMsg, time })
       }
       pushConsoleLines([{
         stream: code !== null && code !== 0 ? 'stderr' : 'system',
@@ -258,6 +258,7 @@ function ShellLayout(): ReactNode {
       }])
     })
     return () => {
+      flushDeferredLogs()
       document.removeEventListener('visibilitychange', onVisibilityChange)
       offProgress()
       offDone()
@@ -266,7 +267,7 @@ function ShellLayout(): ReactNode {
       offLog()
       offExit()
     }
-  }, [pushConsoleLines, pushLauncherLogs, pushToast, queryClient, removeInstallJob, setIsGameRunning, setLastLaunchError, setLaunchInstanceId, setLaunchProgress, setLaunchTaskId, setLauncherLogs, t, upsertInstallJob])
+  }, [pushConsoleLines, pushLauncherLogs, pushToast, queryClient, removeInstallJob, setIsGameRunning, setLaunchInstanceId, setLaunchProgress, setLaunchTaskId, setLauncherLogs, upsertInstallJob])
 
   return (
     <HintProvider>

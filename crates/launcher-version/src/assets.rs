@@ -28,9 +28,14 @@ pub fn build_asset_download_tasks(
     assets_dir: &Path,
 ) -> Vec<DownloadTask> {
     let mut tasks = Vec::with_capacity(index.objects.len());
+    let mut seen_hashes = std::collections::HashSet::with_capacity(index.objects.len());
     let objects_dir = assets_dir.join("objects");
 
     for obj in index.objects.values() {
+        let hash_lower = obj.hash.to_ascii_lowercase();
+        if !seen_hashes.insert(hash_lower) {
+            continue;
+        }
         if !is_valid_asset_hash(&obj.hash) {
             continue;
         }

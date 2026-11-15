@@ -150,13 +150,7 @@ pub fn build_skin_resourcepack(
         }
     }
 
-    let tmp_name = format!(
-        ".pack.tmp-{}.zip",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
+    let tmp_name = format!(".pack.tmp-{}.zip", uuid::Uuid::new_v4().simple());
     let tmp_path = parent.join(tmp_name);
     let file = launcher_security::safe_create_new_file(&tmp_path, false)?;
 
@@ -211,8 +205,11 @@ pub fn build_skin_resourcepack(
             })?;
         }
 
-        zip.finish().map_err(|e| {
+        let finished_file = zip.finish().map_err(|e| {
             LauncherErrorPayload::file_system(format!("Gagal menyelesaikan pembuatan ZIP: {}", e))
+        })?;
+        finished_file.sync_all().map_err(|e| {
+            LauncherErrorPayload::file_system(format!("Gagal sync berkas resource pack: {}", e))
         })?;
         Ok(())
     })();
@@ -236,7 +233,8 @@ pub fn activate_resourcepack_in_options(
 ) -> std::io::Result<()> {
     let pack_entry = format!("\"file/{}\"", pack_file_name);
     let contents = if options_path.exists() {
-        std::fs::read_to_string(options_path)?
+        let bytes = std::fs::read(options_path)?;
+        String::from_utf8_lossy(&bytes).into_owned()
     } else {
         String::new()
     };
@@ -248,17 +246,19 @@ pub fn activate_resourcepack_in_options(
         if line.starts_with("resourcePacks:") {
             found = true;
             if !line.contains(&pack_entry) {
-                if let Some(open_idx) = line.find('[') {
-                    if let Some(close_idx) = line.rfind(']') {
-                        let inside = line[open_idx + 1..close_idx].trim();
-                        if inside.is_empty() {
-                            *line = format!("resourcePacks:[{}]", pack_entry);
-                        } else {
-                            let after = open_idx + 1;
-                            line.insert_str(after, &format!("{},", pack_entry));
-                        }
-                    } else {
+                if let Some((open_idx, close_idx)) = line
+                    .find('[')
+                    .zip(line.rfind(']'))
+                    .filter(|(open, close)| open < close)
+                {
+                    let inside = line[open_idx + 1..close_idx]
+                        .trim()
+                        .trim_end_matches(',')
+                        .trim();
+                    if inside.is_empty() {
                         *line = format!("resourcePacks:[{}]", pack_entry);
+                    } else {
+                        *line = format!("resourcePacks:[{},{}]", inside, pack_entry);
                     }
                 } else {
                     *line = format!("resourcePacks:[{}]", pack_entry);
@@ -269,9 +269,25 @@ pub fn activate_resourcepack_in_options(
     }
 
     if !found {
-        lines.push(format!("resourcePacks:[{},\"vanilla\"]", pack_entry));
+        lines.push(format!("resourcePacks:[\"vanilla\",{}]", pack_entry));
     }
 
-    std::fs::write(options_path, lines.join("\n") + "\n")?;
+    let payload = lines.join("\n") + "\n";
+    let parent = options_path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp_path = parent.join(format!(".options.tmp-{}", uuid::Uuid::new_v4().simple()));
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        if let Err(e) = f.write_all(payload.as_bytes()).and_then(|_| f.sync_all()) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, options_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     Ok(())
 }

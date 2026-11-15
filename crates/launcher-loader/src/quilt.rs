@@ -38,8 +38,8 @@ pub async fn fetch_quilt_loader_versions(
     Ok(entries
         .into_iter()
         .map(|e| LoaderVersionInfo {
+            stable: !e.loader.version.contains('-'),
             version: e.loader.version,
-            stable: true,
         })
         .collect())
 }

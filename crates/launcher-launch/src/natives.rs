@@ -15,13 +15,12 @@ pub fn extract_natives(
     } else {
         "osx"
     };
-    let current_arch = if cfg!(target_arch = "x86_64") {
+    let arch_bits = if cfg!(target_pointer_width = "64") {
         "64"
-    } else if cfg!(target_arch = "x86") {
-        "32"
     } else {
-        "arm64"
+        "32"
     };
+    let rule_arch = launcher_version::host_arch();
     let default_native_key = format!("natives-{}", current_os);
 
     let launch_nonce = uuid::Uuid::new_v4().simple().to_string();
@@ -29,40 +28,32 @@ pub fn extract_natives(
     launcher_security::ensure_dir_within(instance_dir, &natives_dir, true)?;
 
     for lib in &detail.libraries {
-        if !is_library_allowed(
-            lib.rules.as_deref(),
-            current_os,
-            if current_arch == "64" {
-                "x64"
-            } else {
-                current_arch
-            },
-        ) {
+        if !is_library_allowed(lib.rules.as_deref(), current_os, rule_arch) {
             continue;
         }
 
         if let Some(ref downloads) = lib.downloads {
             if let Some(ref classifiers) = downloads.classifiers {
-                let native_key = lib
-                    .natives
-                    .as_ref()
-                    .and_then(|n| n.get(current_os))
-                    .map(|s| s.replace("${arch}", current_arch))
-                    .unwrap_or_else(|| default_native_key.clone());
+                let native_key = match lib.natives.as_ref() {
+                    Some(map) => map.get(current_os).map(|s| s.replace("${arch}", arch_bits)),
+                    None => Some(default_native_key.clone()),
+                };
 
-                if let Some(artifact) = classifiers.get(&native_key) {
-                    let rel_path = artifact.path.clone().unwrap_or_else(|| {
-                        VersionService::maven_to_path(&format!("{}:{}", lib.name, native_key))
-                    });
+                if let Some(native_key) = native_key {
+                    if let Some(artifact) = classifiers.get(&native_key) {
+                        let rel_path = artifact.path.clone().unwrap_or_else(|| {
+                            VersionService::maven_to_path(&format!("{}:{}", lib.name, native_key))
+                        });
 
-                    let jar_path =
-                        launcher_security::safe_subpath(&paths.libraries_dir, &rel_path)?;
-                    if jar_path.exists() {
-                        launcher_archive::extract_zip(
-                            &jar_path,
-                            &natives_dir,
-                            &["META-INF/", ".git/"],
-                        )?;
+                        let jar_path =
+                            launcher_security::safe_subpath(&paths.libraries_dir, &rel_path)?;
+                        if jar_path.exists() {
+                            launcher_archive::extract_zip(
+                                &jar_path,
+                                &natives_dir,
+                                &["META-INF/", ".git/"],
+                            )?;
+                        }
                     }
                 }
             }

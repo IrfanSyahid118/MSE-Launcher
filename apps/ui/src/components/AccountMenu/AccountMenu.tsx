@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
-import { Check, LogOut, Plus, Settings2, UserRound } from 'lucide-react'
+import { Check, LogOut, Plus, Settings2 } from 'lucide-react'
 import { DropdownMenu } from 'radix-ui'
 import { useI18n } from '../../i18n'
 import { errorMessage } from '../../api/launcher'
 import { useAccounts, useSetActiveAccount, useSettings, useSignOut } from '../../api/queries'
 import { useAppStore } from '../../stores/app-store'
 import { AccountDialog } from '../AccountDialog/AccountDialog'
+import { PlayerHeadAvatar } from '../MinecraftSkin/PlayerHeadAvatar'
 import styles from './AccountMenu.module.css'
 
 export interface AccountMenuProps {
@@ -55,9 +56,12 @@ export function AccountMenu({ trigger, align = 'end' }: AccountMenuProps): React
                     className={styles.item}
                     onSelect={() => activate(account.id, account.username)}
                   >
-                    <span className={styles.avatar} aria-hidden>
-                      <UserRound size={14} />
-                    </span>
+                    <PlayerHeadAvatar
+                      account={account}
+                      isActiveAccount={account.id === activeId}
+                      size={26}
+                      className={styles.avatar}
+                    />
                     <span className={styles.itemText}>
                       <span className={styles.username}>{account.username}</span>
                       <span className={styles.type}>

@@ -12,7 +12,8 @@ use crate::assets::{
     build_asset_download_tasks, prepare_legacy_assets_from_index, MojangAssetIndex,
 };
 use crate::models::{
-    MinecraftVersionInfo, MinecraftVersionType, MojangVersionDetail, MojangVersionList,
+    MinecraftVersionInfo, MinecraftVersionType, MojangDownloadArtifact, MojangVersionDetail,
+    MojangVersionList,
 };
 use crate::rules::is_library_allowed;
 
@@ -32,6 +33,14 @@ impl VersionService {
         Self {
             paths,
             http: HttpClient::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_loopback_test(paths: DataPaths) -> Self {
+        Self {
+            paths,
+            http: HttpClient::new_loopback_test(),
         }
     }
 
@@ -87,8 +96,92 @@ impl VersionService {
         set
     }
 
+    async fn fetch_verified_json_bytes<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        expected_sha1: Option<&str>,
+        expected_size: Option<u64>,
+        dest_root: &Path,
+        dest_file: &Path,
+    ) -> Result<T, LauncherErrorPayload> {
+        let resp = self.http.get(url).await?;
+        let bytes = resp.bytes().await.map_err(|e| {
+            LauncherErrorPayload::network(format!("Gagal membaca respon dari {}: {}", url, e))
+        })?;
+
+        if let Some(size) = expected_size.filter(|&s| s > 0) {
+            if bytes.len() as u64 != size {
+                return Err(LauncherErrorPayload::new(
+                    launcher_types::ErrorCode::HashMismatch,
+                    format!(
+                        "Ukuran berkas JSON tidak sesuai untuk {}. Diharapkan: {} byte, Didapat: {} byte",
+                        url,
+                        size,
+                        bytes.len()
+                    ),
+                ));
+            }
+        }
+
+        if let Some(sha1_expected) = expected_sha1.filter(|s| !s.trim().is_empty()) {
+            use sha1::{Digest, Sha1};
+            let actual = hex::encode(Sha1::digest(&bytes));
+            if !actual.eq_ignore_ascii_case(sha1_expected) {
+                return Err(LauncherErrorPayload::new(
+                    launcher_types::ErrorCode::HashMismatch,
+                    format!(
+                        "Checksum SHA-1 tidak cocok untuk {}. Diharapkan: {}, Didapat: {}",
+                        url, sha1_expected, actual
+                    ),
+                ));
+            }
+        }
+
+        let parsed: T = serde_json::from_slice(&bytes).map_err(|e| {
+            LauncherErrorPayload::network(format!(
+                "Gagal mem-parse respon JSON dari {}: {}",
+                url, e
+            ))
+        })?;
+
+        let parent = dest_file.parent().ok_or_else(|| {
+            LauncherErrorPayload::invalid_input("Path tujuan cache JSON tidak memiliki parent.")
+        })?;
+        launcher_security::ensure_secure_dir(parent, true)?;
+        launcher_security::ensure_descendants_no_symlink(dest_root, dest_file)?;
+
+        let tmp = parent.join(format!(
+            ".{}.tmp-{}",
+            dest_file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("cache.json"),
+            uuid::Uuid::new_v4().simple()
+        ));
+        {
+            use std::io::Write;
+            let mut file = launcher_security::safe_create_new_file(&tmp, true)?;
+            if let Err(e) = file.write_all(&bytes) {
+                let _ = fs::remove_file(&tmp);
+                return Err(LauncherErrorPayload::file_system(format!(
+                    "Gagal menulis cache JSON sementara: {}",
+                    e
+                )));
+            }
+            let _ = file.sync_all();
+        }
+        fs::rename(&tmp, dest_file).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            LauncherErrorPayload::file_system(format!("Gagal menyimpan cache JSON: {}", e))
+        })?;
+
+        Ok(parsed)
+    }
+
     async fn fetch_manifest_cached(&self) -> Result<MojangVersionList, LauncherErrorPayload> {
         let cache_file = self.paths.cache_dir.join("version_manifest_v2.json");
+        let _ =
+            launcher_security::ensure_descendants_no_symlink(&self.paths.cache_dir, &cache_file);
 
         if cache_file.exists() {
             if let Ok(metadata) = fs::metadata(&cache_file) {
@@ -106,12 +199,28 @@ impl VersionService {
             }
         }
 
-        let fresh = self
+        match self
             .http
             .get_json::<MojangVersionList>(MOJANG_VERSION_MANIFEST_URL)
-            .await?;
-        let _ = write_json_atomic(&cache_file, &fresh);
-        Ok(fresh)
+            .await
+        {
+            Ok(fresh) => {
+                let _ = write_json_atomic(&cache_file, &fresh);
+                Ok(fresh)
+            }
+            Err(net_err) => {
+                if cache_file.exists() {
+                    if let Ok(Some(stale)) = read_json_file::<MojangVersionList>(&cache_file) {
+                        tracing::warn!(
+                            "Gagal menyegarkan manifest versi ({}); memakai cache lokal kedaluwarsa.",
+                            net_err.message
+                        );
+                        return Ok(stale);
+                    }
+                }
+                Err(net_err)
+            }
+        }
     }
 
     pub async fn get_version_detail(
@@ -122,6 +231,7 @@ impl VersionService {
         let version_dir = launcher_security::safe_subpath(&self.paths.versions_dir, version_id)?;
         let detail_file =
             launcher_security::safe_subpath(&version_dir, &format!("{}.json", version_id))?;
+        launcher_security::ensure_descendants_no_symlink(&self.paths.versions_dir, &detail_file)?;
 
         if detail_file.exists() {
             if let Ok(Some(detail)) = read_json_file::<MojangVersionDetail>(&detail_file) {
@@ -141,13 +251,56 @@ impl VersionService {
                 ))
             })?;
 
-        let detail = self
-            .http
-            .get_json::<MojangVersionDetail>(&entry.url)
-            .await?;
-        write_json_atomic(&detail_file, &detail)?;
+        self.fetch_verified_json_bytes::<MojangVersionDetail>(
+            &entry.url,
+            Some(entry.sha1.as_str()),
+            None,
+            &self.paths.versions_dir,
+            &detail_file,
+        )
+        .await
+    }
 
-        Ok(detail)
+    fn push_artifact_download_task(
+        &self,
+        tasks: &mut Vec<DownloadTask>,
+        artifact: &MojangDownloadArtifact,
+        lib_base_url: Option<&str>,
+        rel_path: &str,
+    ) -> Result<(), LauncherErrorPayload> {
+        let dest = launcher_security::safe_subpath(&self.paths.libraries_dir, rel_path)?;
+        let explicit_url = artifact.url.trim();
+        let base_url = lib_base_url.map(str::trim).unwrap_or("");
+        let missing_checksum = artifact.sha1.trim().is_empty();
+
+        if (explicit_url.is_empty() && base_url.is_empty()) || (missing_checksum && dest.is_file())
+        {
+            return Ok(());
+        }
+
+        let url = if !explicit_url.is_empty() {
+            artifact.url.clone()
+        } else {
+            let base_clean = base_url.trim_end_matches('/');
+            format!("{}/{}", base_clean, rel_path.trim_start_matches('/'))
+        };
+
+        tasks.push(DownloadTask {
+            url,
+            destination: dest,
+            expected_sha1: if artifact.sha1.is_empty() {
+                None
+            } else {
+                Some(artifact.sha1.clone())
+            },
+            expected_sha256: None,
+            expected_size: if artifact.size == 0 {
+                None
+            } else {
+                Some(artifact.size)
+            },
+        });
+        Ok(())
     }
 
     pub fn build_version_download_tasks(
@@ -207,91 +360,48 @@ impl VersionService {
 
             if let Some(ref downloads) = lib.downloads {
                 if let Some(ref artifact) = downloads.artifact {
-                    let rel_path = artifact
-                        .path
-                        .clone()
-                        .unwrap_or_else(|| Self::maven_to_path(&lib.name));
-
-                    let dest =
-                        launcher_security::safe_subpath(&self.paths.libraries_dir, &rel_path)?;
-
-                    let url = if !artifact.url.trim().is_empty() {
-                        artifact.url.clone()
-                    } else {
-                        let base_url = lib
-                            .url
+                    self.push_artifact_download_task(
+                        &mut tasks,
+                        artifact,
+                        lib.url.as_deref(),
+                        artifact
+                            .path
                             .as_deref()
-                            .filter(|u| !u.trim().is_empty())
-                            .unwrap_or("https://libraries.minecraft.net/");
-                        let base_clean = base_url.trim_end_matches('/');
-                        format!("{}/{}", base_clean, rel_path.trim_start_matches('/'))
-                    };
-
-                    tasks.push(DownloadTask {
-                        url,
-                        destination: dest,
-                        expected_sha1: if artifact.sha1.is_empty() {
-                            None
-                        } else {
-                            Some(artifact.sha1.clone())
-                        },
-                        expected_sha256: None,
-                        expected_size: if artifact.size == 0 {
-                            None
-                        } else {
-                            Some(artifact.size)
-                        },
-                    });
+                            .unwrap_or(&Self::maven_to_path(&lib.name)),
+                    )?;
                 }
 
                 if let Some(ref classifiers) = downloads.classifiers {
-                    let native_key = lib
-                        .natives
-                        .as_ref()
-                        .and_then(|n| n.get(current_os))
-                        .map(|s| s.replace("${arch}", arch_bits))
-                        .unwrap_or_else(|| format!("natives-{}", current_os));
+                    // Only infer `natives-<os>` when `natives` map is absent; an explicit map omits unsupported OSes.
+                    let native_key = match lib.natives.as_ref() {
+                        Some(map) => map.get(current_os).map(|s| s.replace("${arch}", arch_bits)),
+                        None => Some(format!("natives-{}", current_os)),
+                    };
 
-                    if let Some(artifact) = classifiers.get(&native_key) {
-                        let rel_path = artifact.path.clone().unwrap_or_else(|| {
-                            Self::maven_to_path(&format!("{}:{}", lib.name, native_key))
-                        });
-
-                        let dest =
-                            launcher_security::safe_subpath(&self.paths.libraries_dir, &rel_path)?;
-
-                        let url = if !artifact.url.trim().is_empty() {
-                            artifact.url.clone()
-                        } else {
-                            let base_url = lib
-                                .url
-                                .as_deref()
-                                .filter(|u| !u.trim().is_empty())
-                                .unwrap_or("https://libraries.minecraft.net/");
-                            let base_clean = base_url.trim_end_matches('/');
-                            format!("{}/{}", base_clean, rel_path.trim_start_matches('/'))
-                        };
-
-                        tasks.push(DownloadTask {
-                            url,
-                            destination: dest,
-                            expected_sha1: if artifact.sha1.is_empty() {
-                                None
-                            } else {
-                                Some(artifact.sha1.clone())
-                            },
-                            expected_sha256: None,
-                            expected_size: if artifact.size == 0 {
-                                None
-                            } else {
-                                Some(artifact.size)
-                            },
-                        });
+                    if let Some(native_key) = native_key {
+                        if let Some(artifact) = classifiers.get(&native_key) {
+                            let fallback_rel =
+                                Self::maven_to_path(&format!("{}:{}", lib.name, native_key));
+                            self.push_artifact_download_task(
+                                &mut tasks,
+                                artifact,
+                                lib.url.as_deref(),
+                                artifact.path.as_deref().unwrap_or(&fallback_rel),
+                            )?;
+                        }
                     }
                 }
             } else {
                 let rel_path = Self::maven_to_path(&lib.name);
                 let dest = launcher_security::safe_subpath(&self.paths.libraries_dir, &rel_path)?;
+                let has_sha1 = lib
+                    .sha1
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if dest.is_file() && !has_sha1 {
+                    continue;
+                }
 
                 let base_url = lib
                     .url
@@ -327,26 +437,39 @@ impl VersionService {
         let indexes_dir = self.paths.assets_dir.join("indexes");
         let index_file =
             launcher_security::safe_subpath(&indexes_dir, &format!("{}.json", index_info.id))?;
+        launcher_security::ensure_descendants_no_symlink(&self.paths.assets_dir, &index_file)?;
 
-        let index = if index_file.exists() {
+        let expected_sha1 =
+            (!index_info.sha1.trim().is_empty()).then_some(index_info.sha1.as_str());
+        let expected_size = (index_info.size > 0).then_some(index_info.size);
+
+        let cache_valid = index_file.exists()
+            && launcher_download::verify_local_file(&index_file, expected_size, expected_sha1)
+                .await;
+
+        let index = if cache_valid {
             match read_json_file::<MojangAssetIndex>(&index_file)? {
                 Some(idx) => idx,
                 None => {
-                    let fresh = self
-                        .http
-                        .get_json::<MojangAssetIndex>(&index_info.url)
-                        .await?;
-                    write_json_atomic(&index_file, &fresh)?;
-                    fresh
+                    self.fetch_verified_json_bytes::<MojangAssetIndex>(
+                        &index_info.url,
+                        expected_sha1,
+                        expected_size,
+                        &self.paths.assets_dir,
+                        &index_file,
+                    )
+                    .await?
                 }
             }
         } else {
-            let fresh = self
-                .http
-                .get_json::<MojangAssetIndex>(&index_info.url)
-                .await?;
-            write_json_atomic(&index_file, &fresh)?;
-            fresh
+            self.fetch_verified_json_bytes::<MojangAssetIndex>(
+                &index_info.url,
+                expected_sha1,
+                expected_size,
+                &self.paths.assets_dir,
+                &index_file,
+            )
+            .await?
         };
 
         Ok(Some((index_info.id.clone(), index)))
@@ -561,5 +684,54 @@ mod tests {
                 .any(|t| t.url.contains("natives-windows")),
             "natives-windows classifier must not be selected for linux platform"
         );
+
+        let osx_tasks = service
+            .build_version_download_tasks_for_platform(&detail, "osx", "arm64", "64")
+            .unwrap();
+        assert!(
+            !osx_tasks.iter().any(|t| t.url.contains("natives-")),
+            "natives classifier must be skipped when explicit natives map omits current_os"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_h13_verified_json_rejects_sha1_mismatch() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut req = [0u8; 512];
+                let _ = stream.read(&mut req).await;
+                let body = b"{}";
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(body).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DataPaths::new(temp.path());
+        let service = VersionService::new_loopback_test(paths.clone());
+        let dest_file = paths.versions_dir.join("1.20.1").join("1.20.1.json");
+        let err = service
+            .fetch_verified_json_bytes::<MojangVersionDetail>(
+                &format!("http://{}/detail.json", addr),
+                Some("0000000000000000000000000000000000000000"),
+                None,
+                &paths.versions_dir,
+                &dest_file,
+            )
+            .await
+            .expect_err("Corrupted version detail JSON must be rejected");
+        server.abort();
+        assert_eq!(err.code, launcher_types::ErrorCode::HashMismatch);
+        assert!(!dest_file.exists());
     }
 }

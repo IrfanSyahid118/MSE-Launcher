@@ -12,7 +12,9 @@ use tracing::{debug, info, warn};
 pub const DEFAULT_DISCORD_CLIENT_ID: &str = "1570736748328132668";
 pub const LAUNCHER_RPC_NAME: &str = "MSE Launcher";
 pub const LAUNCHER_RPC_IDLE_DESCRIPTION: &str = "Exploring....";
-pub const LAUNCHER_RPC_ICON_URL: &str = "https://i.ibb.co/yFJ4yzjQ/Java-Edition-icon-3.webp";
+// Replace with your newly uploaded HTTPS URL or Discord Portal asset key once uploaded.
+pub const LAUNCHER_RPC_ICON_URL: &str =
+    "https://cdn.discordapp.com/app-assets/1570736748328132668/1571144659827167333.png";
 
 #[derive(Debug, Clone)]
 pub enum ActivityState {
@@ -21,6 +23,7 @@ pub enum ActivityState {
         instance_name: String,
         version: String,
         loader: String,
+        icon_url: Option<String>,
         started_at: i64,
     },
     Clear,
@@ -91,6 +94,45 @@ fn build_idle_activity<'a>(app_start_epoch: i64) -> Activity<'a> {
                 .large_image(LAUNCHER_RPC_ICON_URL)
                 .large_text(LAUNCHER_RPC_NAME),
         )
+}
+
+fn resolve_playing_image_url(icon_url: Option<&str>) -> Option<&str> {
+    let trimmed = icon_url?.trim();
+    // Discord Rich Presence asset fields only accept HTTPS URLs up to 256 chars (not data: URIs).
+    if trimmed.starts_with("https://")
+        && trimmed.len() <= 256
+        && !trimmed.chars().any(char::is_whitespace)
+    {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+fn build_playing_activity<'a>(
+    instance_name: &'a str,
+    state_str: &'a str,
+    details_str: &'a str,
+    icon_url: Option<&'a str>,
+    started_at: i64,
+) -> Activity<'a> {
+    let assets = if let Some(modpack_icon) = resolve_playing_image_url(icon_url) {
+        Assets::new()
+            .large_image(modpack_icon)
+            .large_text(instance_name)
+            .small_image(LAUNCHER_RPC_ICON_URL)
+            .small_text(LAUNCHER_RPC_NAME)
+    } else {
+        Assets::new()
+            .large_image(LAUNCHER_RPC_ICON_URL)
+            .large_text(instance_name)
+    };
+
+    Activity::new()
+        .state(state_str)
+        .details(details_str)
+        .timestamps(Timestamps::new().start(started_at))
+        .assets(assets)
 }
 
 impl DiscordRpcService {
@@ -237,22 +279,19 @@ impl DiscordRpcService {
                             instance_name,
                             version,
                             loader,
+                            icon_url,
                             started_at,
                         } => {
                             if settings.show_playing {
                                 let details_str = format!("{loader} {version}");
                                 let state_str = format!("Playing {instance_name}");
-                                let act = Activity::new()
-                                    .state(&state_str)
-                                    .details(&details_str)
-                                    .timestamps(Timestamps::new().start(*started_at))
-                                    .assets(
-                                        Assets::new()
-                                            .large_image(LAUNCHER_RPC_ICON_URL)
-                                            .large_text(instance_name)
-                                            .small_image(LAUNCHER_RPC_ICON_URL)
-                                            .small_text(LAUNCHER_RPC_NAME),
-                                    );
+                                let act = build_playing_activity(
+                                    instance_name,
+                                    &state_str,
+                                    &details_str,
+                                    icon_url.as_deref(),
+                                    *started_at,
+                                );
                                 c.set_activity(act)
                             } else if settings.show_idle {
                                 c.set_activity(build_idle_activity(app_start_epoch))
@@ -291,7 +330,13 @@ impl DiscordRpcService {
         self.idle_updates.load(Ordering::Relaxed)
     }
 
-    pub fn set_playing(&self, instance_name: String, version: String, loader: String) {
+    pub fn set_playing(
+        &self,
+        instance_name: String,
+        version: String,
+        loader: String,
+        icon_url: Option<String>,
+    ) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -303,6 +348,7 @@ impl DiscordRpcService {
                 instance_name,
                 version,
                 loader,
+                icon_url,
                 started_at: now,
             }));
     }
@@ -348,6 +394,7 @@ mod tests {
             "Survival World".to_string(),
             "1.21.4".to_string(),
             "Fabric".to_string(),
+            Some("https://cdn.modrinth.com/data/1KVo5zza/icon.webp".to_string()),
         );
         service.update_settings(DiscordSettings {
             enabled: true,
@@ -404,5 +451,36 @@ mod tests {
         assert_eq!(serialized["state"], "Exploring....");
         assert_eq!(serialized["assets"]["large_text"], LAUNCHER_RPC_NAME);
         assert_eq!(serialized["assets"]["large_image"], LAUNCHER_RPC_ICON_URL);
+    }
+
+    #[test]
+    fn test_build_playing_activity_uses_https_modpack_icon_only() {
+        let modpack_url = "https://cdn.modrinth.com/data/1KVo5zza/icon.webp";
+        let with_pack = serde_json::to_value(build_playing_activity(
+            "Fabulously Optimized",
+            "Playing Fabulously Optimized",
+            "Fabric 1.21.4",
+            Some(modpack_url),
+            456,
+        ))
+        .unwrap();
+        assert_eq!(with_pack["assets"]["large_image"], modpack_url);
+        assert_eq!(with_pack["assets"]["large_text"], "Fabulously Optimized");
+        assert_eq!(with_pack["assets"]["small_image"], LAUNCHER_RPC_ICON_URL);
+        assert_eq!(with_pack["assets"]["small_text"], LAUNCHER_RPC_NAME);
+
+        let with_data_uri = serde_json::to_value(build_playing_activity(
+            "Custom Pack",
+            "Playing Custom Pack",
+            "Fabric 1.21.4",
+            Some("data:image/png;base64,iVBORw0KGgo="),
+            456,
+        ))
+        .unwrap();
+        assert_eq!(
+            with_data_uri["assets"]["large_image"],
+            LAUNCHER_RPC_ICON_URL
+        );
+        assert!(with_data_uri["assets"]["small_image"].is_null());
     }
 }

@@ -43,7 +43,7 @@ export const instanceContentEntrySchema = z.object({
   versionId: z.string().min(1),
   type: contentTypeSchema,
   fileName: z.string().min(1),
-  sha1: z.string().regex(/^[a-f0-9]{40}$/i),
+  sha1: z.string().regex(/^([a-f0-9]{40})?$/i),
   worldFolder: z.string().min(1).max(128).optional(),
   disabled: z.boolean().optional(),
 })

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import type { ChangeEvent, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { motion } from 'motion/react'
 import { Check, Plus, Trash2, UserRound, Sparkles, Upload } from 'lucide-react'
 import { useI18n } from '../i18n'
@@ -10,7 +10,6 @@ import {
   useSetActiveAccount,
   useSettings,
   useSignOut,
-  useUpdateAccountSkin,
 } from '../api/queries'
 import { useAppStore } from '../stores/app-store'
 import { AccountDialog } from '../components/AccountDialog/AccountDialog'
@@ -18,7 +17,8 @@ import { GlassButton } from '../components/GlassButton/GlassButton'
 import { GlassCard } from '../components/GlassCard/GlassCard'
 import { ScreenHeader } from '../components/ScreenHeader/ScreenHeader'
 import { MinecraftSkin3D } from '../components/MinecraftSkin/MinecraftSkin3D'
-import { useActiveSkin } from '../components/MinecraftSkin/useActiveSkin'
+import { PlayerHeadAvatar } from '../components/MinecraftSkin/PlayerHeadAvatar'
+import { useActiveSkin, useSelectSkinType, useUploadAccountSkin } from '../components/MinecraftSkin/useActiveSkin'
 import styles from './Accounts.module.css'
 
 export function Accounts(): ReactNode {
@@ -28,52 +28,15 @@ export function Accounts(): ReactNode {
   const { account: activeAccount } = useActiveAccount()
   const setActiveAccount = useSetActiveAccount()
   const signOut = useSignOut()
-  const updateAccountSkin = useUpdateAccountSkin()
   const pushToast = useAppStore((state) => state.pushToast)
-  const setSelectedSkin = useAppStore((state) => state.setSelectedSkin)
-  const setSelectedSkinType = useAppStore((state) => state.setSelectedSkinType)
-  const setCustomSkinUrl = useAppStore((state) => state.setCustomSkinUrl)
   const [createOpen, setCreateOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const settings = settingsQuery.data
   const accounts = accountsQuery.data ?? []
   const activeSkin = useActiveSkin(activeAccount)
-
-  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>): void => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result
-      if (typeof dataUrl === 'string') {
-        setCustomSkinUrl(dataUrl)
-        setSelectedSkinType('custom')
-        if (activeAccount) {
-          updateAccountSkin.mutate(
-            {
-              accountId: activeAccount.id,
-              skinData: dataUrl,
-              skinVariant: activeSkin.isSlim ? 'slim' : 'classic',
-              capeData: activeAccount.capeUrl,
-            },
-            {
-              onSuccess: () => {
-                pushToast(t('account.skin.loaded'))
-              },
-              onError: (error) => {
-                pushToast(errorMessage(error, t('error.unknown')), 'error')
-              },
-            },
-          )
-        } else {
-          pushToast(t('account.skin.loaded'))
-        }
-      }
-    }
-    reader.readAsDataURL(file)
-  }
+  const selectSkinType = useSelectSkinType(activeAccount)
+  const handleFileUpload = useUploadAccountSkin(activeAccount, activeSkin.isSlim)
 
   const removeAccount = (accountId: string, username: string): void => {
     signOut.mutate(accountId, {
@@ -126,9 +89,12 @@ export function Accounts(): ReactNode {
 
                 return (
                   <li key={account.id} className={`${styles.accountItem} ${active ? styles.accountItemActive : ''}`}>
-                    <span className={styles.accountAvatar} aria-hidden>
-                      {account.username.slice(0, 2).toUpperCase()}
-                    </span>
+                    <PlayerHeadAvatar
+                      account={account}
+                      isActiveAccount={active}
+                      size={40}
+                      className={styles.accountAvatar}
+                    />
                     <div className={styles.accountText}>
                       <span className={styles.accountName}>{account.username}</span>
                       <span className={styles.accountMeta}>
@@ -259,7 +225,7 @@ export function Accounts(): ReactNode {
                     className={`${styles.segment} ${activeSkin.skinType === 'microsoft' ? styles.segmentActive : ''}`}
                     aria-checked={activeSkin.skinType === 'microsoft'}
                     role="radio"
-                    onClick={() => setSelectedSkinType('microsoft')}
+                    onClick={() => selectSkinType('microsoft')}
                   >
                     {activeSkin.skinType === 'microsoft' ? (
                       <motion.div
@@ -277,10 +243,7 @@ export function Accounts(): ReactNode {
                   className={`${styles.segment} ${activeSkin.skinType === 'steve' ? styles.segmentActive : ''}`}
                   aria-checked={activeSkin.skinType === 'steve'}
                   role="radio"
-                  onClick={() => {
-                    setSelectedSkin('steve')
-                    setSelectedSkinType('steve')
-                  }}
+                  onClick={() => selectSkinType('steve')}
                 >
                   {activeSkin.skinType === 'steve' ? (
                     <motion.div
@@ -297,10 +260,7 @@ export function Accounts(): ReactNode {
                   className={`${styles.segment} ${activeSkin.skinType === 'alex' ? styles.segmentActive : ''}`}
                   aria-checked={activeSkin.skinType === 'alex'}
                   role="radio"
-                  onClick={() => {
-                    setSelectedSkin('alex')
-                    setSelectedSkinType('alex')
-                  }}
+                  onClick={() => selectSkinType('alex')}
                 >
                   {activeSkin.skinType === 'alex' ? (
                     <motion.div
@@ -321,7 +281,7 @@ export function Accounts(): ReactNode {
                     if (!activeSkin.hasCustom) {
                       fileInputRef.current?.click()
                     } else {
-                      setSelectedSkinType('custom')
+                      selectSkinType('custom')
                     }
                   }}
                 >

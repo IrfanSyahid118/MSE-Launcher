@@ -18,16 +18,18 @@ export function InstanceIcon({
   className,
   alt = '',
 }: InstanceIconProps): ReactNode {
-  const [iconBroken, setIconBroken] = useState(false)
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null)
 
+  const storedIconUrl = instance.iconUrl?.trim() || null
   const modpack = instance.content?.find((entry) => entry.type === 'modpack') ?? null
   const projectQuery = useContentProject(
     modpack?.provider ?? 'modrinth',
-    !instance.iconUrl ? (modpack?.projectId ?? null) : null,
+    !storedIconUrl ? (modpack?.projectId ?? null) : null,
   )
 
-  const creatorIconUrl = instance.iconUrl || projectQuery.data?.iconUrl || null
-  const isModpack = Boolean(instance.iconUrl || modpack)
+  const creatorIconUrl = storedIconUrl || projectQuery.data?.iconUrl || null
+  const isModpack = Boolean(storedIconUrl || modpack)
+  const iconBroken = Boolean(creatorIconUrl && brokenUrl === creatorIconUrl)
 
   const activeSrc = isModpack && creatorIconUrl && !iconBroken ? creatorIconUrl : defaultInstanceIcon
 
@@ -42,11 +44,11 @@ export function InstanceIcon({
         width={size}
         height={size}
         className={styles.image}
-        loading="lazy"
+        loading="eager"
         decoding="async"
         onError={() => {
           if (activeSrc !== defaultInstanceIcon) {
-            setIconBroken(true)
+            setBrokenUrl(creatorIconUrl)
           }
         }}
       />

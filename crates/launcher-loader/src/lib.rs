@@ -123,6 +123,7 @@ mod tests {
                 "game": [],
                 "jvm": ["-Dfabric.development=false"]
             })),
+            java_version: None,
             minecraft_arguments: None,
         };
 

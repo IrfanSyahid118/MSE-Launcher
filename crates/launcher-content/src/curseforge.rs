@@ -20,12 +20,6 @@ async fn cf_get_json<T: serde::de::DeserializeOwned>(
     api_key: &str,
     context: &str,
 ) -> Result<T, LauncherErrorPayload> {
-    if !HttpClient::is_allowed_request_url(url) {
-        return Err(LauncherErrorPayload::invalid_input(
-            "URL CurseForge harus menggunakan protokol HTTPS (SEC-06).",
-        ));
-    }
-
     let using_proxy = is_proxy_base(api_base);
     if api_key.is_empty() && !using_proxy {
         return Err(LauncherErrorPayload::provider_not_configured(
@@ -33,7 +27,7 @@ async fn cf_get_json<T: serde::de::DeserializeOwned>(
         ));
     }
 
-    let mut req = http.client().get(url);
+    let mut req = http.request(reqwest::Method::GET, url)?;
     if !using_proxy && !api_key.is_empty() {
         req = req.header("x-api-key", api_key);
     }
