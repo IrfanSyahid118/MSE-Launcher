@@ -149,6 +149,7 @@ function ShellLayout(): ReactNode {
       if (job) {
         instanceRefreshedTasks.delete(taskId)
         void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+        void queryClient.invalidateQueries({ queryKey: ['content'] })
         pushToast(tRef.current('browse.installDone', { title: job.title }))
         removeInstallJob(taskId)
         void result

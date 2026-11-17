@@ -172,8 +172,12 @@ impl Write for TeeLineWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let _ = std::io::stderr().write_all(buf);
         self.line_buf.extend_from_slice(buf);
-        if buf.contains(&b'\n') {
-            self.flush_line_buf();
+        if let Some(last_nl) = self.line_buf.iter().rposition(|&b| b == b'\n') {
+            let complete = self.line_buf.drain(..=last_nl).collect::<Vec<u8>>();
+            let text = String::from_utf8_lossy(&complete);
+            for part in text.lines() {
+                self.service.ingest_tracing_line(part);
+            }
         }
         Ok(buf.len())
     }

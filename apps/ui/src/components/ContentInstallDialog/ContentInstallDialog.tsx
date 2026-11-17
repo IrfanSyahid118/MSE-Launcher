@@ -237,8 +237,8 @@ export function ContentInstallDialog({
         isModpack
           ? t('browse.installModpackDescription')
           : t('browse.installTarget', {
-              name: instance?.name ?? '',
-              version: instance?.minecraftVersion || t('instance.versionUnavailable'),
+              name: currentInstance?.name ?? '',
+              version: currentInstance?.minecraftVersion || t('instance.versionUnavailable'),
             })
       }
       closeLabel={t('common.close')}
@@ -256,7 +256,7 @@ export function ContentInstallDialog({
               variant="outline"
               icon={<ExternalLink size={14} aria-hidden />}
               onClick={() => {
-                void invoke('shell:openExternal', { url: curseForgeUrl })
+                void invoke('shell:openExternal', { url: curseForgeUrl }).catch(() => undefined)
               }}
               data-testid="content-open-curseforge"
             >
@@ -337,6 +337,7 @@ export function ContentInstallDialog({
               onChange={(e) => {
                 setTargetInstanceId(e.target.value)
                 setSelectedVersionId(null)
+                setWorldId('')
               }}
               data-testid="content-target-instance-select"
             >
@@ -474,7 +475,7 @@ export function ContentInstallDialog({
                           variant="outline"
                           icon={<ExternalLink size={12} aria-hidden />}
                           onClick={() => {
-                            void invoke('shell:openExternal', { url: curseForgeUrl })
+                            void invoke('shell:openExternal', { url: curseForgeUrl }).catch(() => undefined)
                           }}
                         >
                           {t('browse.openInCurseForge')}

@@ -208,9 +208,9 @@ impl LauncherLogStore {
                 .rev()
                 .map(|entry| {
                     let clean = LauncherLogLine {
-                        stream: entry.stream.clone(),
+                        stream: sanitize_log_text(&entry.stream),
                         line: sanitize_log_text(&entry.line),
-                        time: entry.time.clone(),
+                        time: sanitize_log_text(&entry.time),
                     };
                     format_log_line(&clean)
                 })
@@ -383,16 +383,28 @@ fn append_entry_to_disk(path: &PathBuf, entry: &LauncherLogLine) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return;
+    }
     let backup = path.with_file_name("launcher.prev.log");
     rotate_if_oversized(path, &backup);
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return;
+    }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "[{}] [{}] {}", entry.time, entry.stream, entry.line);
     }
 }
 
 fn rotate_if_oversized(current: &PathBuf, backup: &PathBuf) {
-    if let Ok(meta) = fs::metadata(current) {
+    if let Ok(meta) = fs::symlink_metadata(current) {
+        if meta.file_type().is_symlink() {
+            return;
+        }
         if meta.len() > MAX_DISK_BYTES {
+            if fs::symlink_metadata(backup).is_ok_and(|m| m.file_type().is_symlink()) {
+                return;
+            }
             let _ = fs::remove_file(backup);
             let _ = fs::rename(current, backup);
         }

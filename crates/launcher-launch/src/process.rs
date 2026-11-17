@@ -18,6 +18,7 @@ pub struct LogLine {
 pub struct RunningGame {
     pub pid: u32,
     kill_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    exit_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl RunningGame {
@@ -25,6 +26,16 @@ impl RunningGame {
         let mut tx_opt = self.kill_tx.lock().await;
         if let Some(tx) = tx_opt.take() {
             let _ = tx.send(());
+        }
+        drop(tx_opt);
+
+        let mut rx = self.exit_rx.clone();
+        if !*rx.borrow() {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                rx.wait_for(|exited| *exited),
+            )
+            .await;
         }
         Ok(())
     }
@@ -69,6 +80,7 @@ where
 
     let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
     let kill_tx = Arc::new(Mutex::new(Some(kill_tx)));
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
     let log_cb = Arc::new(on_log);
 
     // Batch logs every 100ms to avoid IPC event flooding during game startup.
@@ -132,6 +144,8 @@ where
             }
         };
 
+        let _ = exit_tx.send(true);
+
         let mut stdout_handle = stdout_handle;
         let mut stderr_handle = stderr_handle;
         let mut batcher_handle = batcher_handle;
@@ -161,7 +175,11 @@ where
         on_exit(code);
     });
 
-    Ok(RunningGame { pid, kill_tx })
+    Ok(RunningGame {
+        pid,
+        kill_tx,
+        exit_rx,
+    })
 }
 
 async fn pump_log_stream<R: AsyncRead + Unpin>(

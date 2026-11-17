@@ -87,6 +87,7 @@ pub fn pick_folder_dialog(initial_path: Option<&str>, title: &str) -> Option<Str
     #[cfg(windows)]
     {
         let script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -140,7 +141,9 @@ $names = @('MSE Launcher', 'minecraft-launcher-desktop')
 for ($i = 0; $i -lt 10; $i++) {
     $procs = Get-Process -Name $names -ErrorAction SilentlyContinue
     if (-not $procs) { break }
-    if ($i -ge 3) {
+    if ($i -eq 0) {
+        $procs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+    } elseif ($i -ge 3) {
         $procs | Stop-Process -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 250
@@ -298,7 +301,7 @@ pub fn read_registered_install_location() -> Option<PathBuf> {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MSELauncher' -ErrorAction SilentlyContinue).InstallLocation",
+                "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MSELauncher' -ErrorAction SilentlyContinue).InstallLocation | ForEach-Object { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::Out.Write($_) }",
             ])
             .output()
             .ok()?;

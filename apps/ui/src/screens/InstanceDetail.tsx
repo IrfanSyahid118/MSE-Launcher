@@ -46,6 +46,7 @@ import { compareMinecraftVersions, supportsDatapacks } from '@mc/shared'
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n'
 import {
+  useActiveAccount,
   useAddInstanceServer,
   useContentUpdates,
   useContentWorlds,
@@ -183,17 +184,30 @@ function VirtualizedContentList({
   const containerRef = useRef<HTMLDivElement>(null)
   const [offsetTop, setOffsetTop] = useState(0)
 
-  useEffect(() => {
-    if (containerRef.current && scrollContainerRef.current) {
-      const cRect = containerRef.current.getBoundingClientRect()
-      const sRect = scrollContainerRef.current.getBoundingClientRect()
-      setOffsetTop(cRect.top - sRect.top + scrollContainerRef.current.scrollTop)
+  const getScrollElement = useCallback((): HTMLElement | null => {
+    let el: HTMLElement | null = scrollContainerRef.current
+    while (el) {
+      const style = window.getComputedStyle(el)
+      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        return el
+      }
+      el = el.parentElement
     }
+    return scrollContainerRef.current
   }, [scrollContainerRef])
+
+  useEffect(() => {
+    const scrollEl = getScrollElement()
+    if (containerRef.current && scrollEl) {
+      const cRect = containerRef.current.getBoundingClientRect()
+      const sRect = scrollEl.getBoundingClientRect()
+      setOffsetTop(cRect.top - sRect.top + scrollEl.scrollTop)
+    }
+  }, [getScrollElement, items.length])
 
   const virtualizer = useVirtualizer({
     count: items.length,
-    getScrollElement: () => scrollContainerRef.current,
+    getScrollElement,
     estimateSize: () => 64,
     overscan: 6,
     scrollMargin: offsetTop,
@@ -305,6 +319,7 @@ export function InstanceDetail(): ReactNode {
   const queryClient = useQueryClient()
   const launchInFlightRef = useRef(false)
   const instancesQuery = useInstances()
+  const activeAccountQuery = useActiveAccount()
   const removeInstance = useRemoveInstance()
   const updateInstance = useUpdateInstance()
   const removeContent = useRemoveContent()
@@ -435,12 +450,21 @@ export function InstanceDetail(): ReactNode {
   }, [versionsQuery.data])
 
   const versionOptions: GlassSelectOption[] = useMemo(() => {
-    return releases.map((v) => ({
+    const opts = releases.map((v) => ({
       value: v.id,
       label: v.id,
       ...(v.installed ? { badge: t('instance.versionInstalled') } : {}),
     }))
-  }, [releases, t])
+    if (editVersion && !releases.some((v) => v.id === editVersion)) {
+      const current = (versionsQuery.data ?? []).find((v) => v.id === editVersion)
+      opts.unshift({
+        value: editVersion,
+        label: editVersion,
+        ...(current?.installed ? { badge: t('instance.versionInstalled') } : {}),
+      })
+    }
+    return opts
+  }, [editVersion, releases, t, versionsQuery.data])
 
   const loaderOptions: GlassSelectOption[] = useMemo(
     () => [
@@ -618,6 +642,10 @@ export function InstanceDetail(): ReactNode {
 
   const handleLaunch = async (serverAddress?: string): Promise<void> => {
     if (launchInFlightRef.current || launchTaskId !== null || isGameRunning) {
+      return
+    }
+    if (!activeAccountQuery.account) {
+      pushToast(t('play.reason.account'), 'error')
       return
     }
     if (!instance.minecraftVersion) {
@@ -871,7 +899,7 @@ export function InstanceDetail(): ReactNode {
             variant="outline"
             icon={<FolderOpen size={14} aria-hidden />}
             onClick={() => {
-              void invoke('instances:openFolder', { id: instance.id })
+              void invoke('instances:openFolder', { id: instance.id }).catch(() => undefined)
             }}
             title={t('instances.openFolder')}
           >

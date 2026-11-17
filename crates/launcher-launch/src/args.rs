@@ -10,7 +10,7 @@ const ARGFILE_THRESHOLD: usize = 2048;
 static VAR_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\{([^}]+)\}").expect("valid regex"));
 static TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+"#).expect("valid regex")
+    Regex::new(r#"(?:[^\s"']+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')+"#).expect("valid regex")
 });
 
 const FORBIDDEN_JVM_PREFIXES: &[&str] = &[
@@ -97,6 +97,33 @@ pub fn is_allowed_jvm_arg(clean: &str) -> bool {
     !is_forbidden
 }
 
+fn strip_wrapping_quotes(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut chars = token.chars().peekable();
+    let mut active_quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        match active_quote {
+            Some(q) if c == '\\' => {
+                if let Some(&next) = chars.peek() {
+                    if next == q || next == '\\' {
+                        out.push(chars.next().expect("peeked"));
+                        continue;
+                    }
+                }
+                out.push(c);
+            }
+            Some(q) if c == q => {
+                active_quote = None;
+            }
+            None if c == '"' || c == '\'' => {
+                active_quote = Some(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn get_preset_jvm_args(preset: JvmPreset, custom_args: &str) -> Vec<String> {
     match preset {
         JvmPreset::Performance => vec![
@@ -121,14 +148,10 @@ pub fn get_preset_jvm_args(preset: JvmPreset, custom_args: &str) -> Vec<String> 
 
             for cap in TOKEN_REGEX.find_iter(custom_args) {
                 let token = cap.as_str();
-                let clean = token
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .or_else(|| token.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-                    .unwrap_or(token);
+                let clean = strip_wrapping_quotes(token);
 
-                if is_allowed_jvm_arg(clean) {
-                    sanitized.push(clean.to_string());
+                if is_allowed_jvm_arg(&clean) {
+                    sanitized.push(clean);
                 }
             }
 
@@ -158,10 +181,15 @@ pub fn expand_arguments_json(
         }
 
         if let Some(obj) = item.as_object() {
-            if let Some(rules_val) = obj.get("rules").and_then(|r| r.as_array()) {
-                let rules: Vec<launcher_version::MojangRule> =
-                    serde_json::from_value(serde_json::Value::Array(rules_val.clone()))
-                        .unwrap_or_default();
+            if let Some(rules_raw) = obj.get("rules") {
+                let Some(rules_val) = rules_raw.as_array() else {
+                    continue;
+                };
+                let Ok(rules) = serde_json::from_value::<Vec<launcher_version::MojangRule>>(
+                    serde_json::Value::Array(rules_val.clone()),
+                ) else {
+                    continue;
+                };
                 if !launcher_version::is_library_allowed(Some(&rules), current_os, current_arch) {
                     continue;
                 }
@@ -326,5 +354,22 @@ mod tests {
         assert!(args.is_empty());
         let args2 = get_preset_jvm_args(JvmPreset::Custom, "-DFoo=bar '");
         assert_eq!(args2, vec!["-DFoo=bar".to_string()]);
+    }
+
+    #[test]
+    fn test_embedded_quotes_and_fail_closed_malformed_rules() {
+        let quoted = get_preset_jvm_args(JvmPreset::Custom, r#"-Dmsg="hello world" -XX:+UseG1GC"#);
+        assert_eq!(
+            quoted,
+            vec!["-Dmsg=hello world".to_string(), "-XX:+UseG1GC".to_string()]
+        );
+
+        let malformed_rules = serde_json::json!([
+            { "rules": "not-an-array", "value": "--bad-1" },
+            { "rules": [{ "invalid_schema": 123 }], "value": "--bad-2" },
+            "--good"
+        ]);
+        let expanded = expand_arguments_json(&malformed_rules, &HashMap::new(), "windows", "x64");
+        assert_eq!(expanded, vec!["--good".to_string()]);
     }
 }

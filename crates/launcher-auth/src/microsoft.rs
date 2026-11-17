@@ -455,20 +455,37 @@ impl MicrosoftAuthService {
         &self,
         account: &Account,
     ) -> Result<Account, LauncherErrorPayload> {
+        self.refresh_session_inner(account, false).await
+    }
+
+    pub async fn force_refresh_session(
+        &self,
+        account: &Account,
+    ) -> Result<Account, LauncherErrorPayload> {
+        self.refresh_session_inner(account, true).await
+    }
+
+    async fn refresh_session_inner(
+        &self,
+        account: &Account,
+        force: bool,
+    ) -> Result<Account, LauncherErrorPayload> {
         let lock = self.refresh_lock_for(&account.id);
         let _guard = lock.lock().await;
 
         // If a concurrent caller just refreshed and persisted a non-expiring token, reuse it.
-        if let Some(latest) = self.accounts.get(&account.id) {
-            if Self::is_expiry_still_valid(latest.expires_at.as_deref()) {
-                let secret_key = format!("tokens:{}", latest.id);
-                if let Some(mut secret_data) = self.secrets.get(&secret_key).await {
-                    let parsed = serde_json::from_str::<AccountTokens>(&secret_data);
-                    secret_data.zeroize();
-                    if let Ok(tokens) = parsed {
-                        let mut hydrated = latest;
-                        hydrated.tokens = Some(tokens);
-                        return Ok(hydrated);
+        if !force {
+            if let Some(latest) = self.accounts.get(&account.id) {
+                if Self::is_expiry_still_valid(latest.expires_at.as_deref()) {
+                    let secret_key = format!("tokens:{}", latest.id);
+                    if let Some(mut secret_data) = self.secrets.get(&secret_key).await {
+                        let parsed = serde_json::from_str::<AccountTokens>(&secret_data);
+                        secret_data.zeroize();
+                        if let Ok(tokens) = parsed {
+                            let mut hydrated = latest;
+                            hydrated.tokens = Some(tokens);
+                            return Ok(hydrated);
+                        }
                     }
                 }
             }
@@ -962,7 +979,7 @@ impl MicrosoftAuthService {
         &self,
         account: &mut Account,
     ) -> Result<String, LauncherErrorPayload> {
-        let refreshed = self.refresh_session(account).await?;
+        let refreshed = self.force_refresh_session(account).await?;
         let next_tok = refreshed
             .tokens
             .as_ref()

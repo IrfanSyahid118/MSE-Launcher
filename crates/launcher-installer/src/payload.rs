@@ -73,17 +73,35 @@ impl Seek for SubReader {
             SeekFrom::End(offset) => self.len as i128 + offset as i128,
             SeekFrom::Current(offset) => self.pos as i128 + offset as i128,
         };
-        if next < 0 {
+        if next < 0 || next > self.len as i128 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "seek before start of payload",
+                "seek outside payload bounds",
             ));
         }
         let next_u64 = next as u64;
-        self.file.seek(SeekFrom::Start(self.start + next_u64))?;
+        let abs_offset = self
+            .start
+            .checked_add(next_u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek offset overflow"))?;
+        self.file.seek(SeekFrom::Start(abs_offset))?;
         self.pos = next_u64;
         Ok(self.pos)
     }
+}
+
+pub fn validate_app_exe_name(name: &str) -> Result<(), PayloadError> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name.contains('\0')
+    {
+        return Err(PayloadError::InvalidLayout);
+    }
+    Ok(())
 }
 
 pub fn find_payload_offset(exe_path: &Path) -> Result<u64, PayloadError> {
@@ -125,12 +143,48 @@ pub fn read_payload_manifest(exe_path: &Path) -> Result<(u64, PayloadManifest), 
     Ok((offset, manifest))
 }
 
+struct TempFileCleanup<'a>(&'a Path, bool);
+
+impl Drop for TempFileCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.1 {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+}
+
+fn replace_dest_with_tmp(tmp_path: &Path, dest_path: &Path) -> io::Result<()> {
+    let backup_path = dest_path.with_extension("exe.bak");
+    let had_existing = dest_path.exists();
+    if had_existing {
+        let _ = std::fs::remove_file(&backup_path);
+        std::fs::rename(dest_path, &backup_path)?;
+    }
+
+    match std::fs::rename(tmp_path, dest_path) {
+        Ok(()) => {
+            if had_existing {
+                let _ = std::fs::remove_file(&backup_path);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if had_existing {
+                let _ = std::fs::rename(&backup_path, dest_path);
+            }
+            Err(err)
+        }
+    }
+}
+
 pub fn extract_payload_app(
     exe_path: &Path,
     payload_offset: u64,
     app_exe_name: &str,
     dest_path: &Path,
 ) -> Result<u64, PayloadError> {
+    validate_app_exe_name(app_exe_name)?;
+
     let file = File::open(exe_path)?;
     let file_len = file.metadata()?.len();
     let reader = SubReader::new(file, payload_offset, file_len - FOOTER_LEN)?;
@@ -143,16 +197,15 @@ pub fn extract_payload_app(
     }
 
     let tmp_path = dest_path.with_extension("exe.tmp");
+    let mut guard = TempFileCleanup(&tmp_path, false);
     {
         let mut out = File::create(&tmp_path)?;
         io::copy(&mut entry, &mut out)?;
         out.flush()?;
     }
 
-    if dest_path.exists() {
-        std::fs::remove_file(dest_path)?;
-    }
-    std::fs::rename(&tmp_path, dest_path)?;
+    replace_dest_with_tmp(&tmp_path, dest_path)?;
+    guard.1 = true;
     Ok(total_size)
 }
 
@@ -167,6 +220,7 @@ pub fn copy_stub_without_payload(
 
     let mut src = File::open(exe_path)?;
     let tmp_path = dest_path.with_extension("exe.tmp");
+    let mut guard = TempFileCleanup(&tmp_path, false);
     {
         let mut out = File::create(&tmp_path)?;
         let mut limited = io::Read::by_ref(&mut src).take(payload_offset);
@@ -174,10 +228,8 @@ pub fn copy_stub_without_payload(
         out.flush()?;
     }
 
-    if dest_path.exists() {
-        std::fs::remove_file(dest_path)?;
-    }
-    std::fs::rename(&tmp_path, dest_path)?;
+    replace_dest_with_tmp(&tmp_path, dest_path)?;
+    guard.1 = true;
     Ok(())
 }
 
@@ -238,5 +290,23 @@ mod tests {
             std::fs::read(&uninstall_dest).unwrap(),
             b"MZ_FAKE_STUB_BINARY_CONTENT_123456"
         );
+    }
+
+    #[test]
+    fn test_validate_app_exe_name_and_subreader_bounds() {
+        assert!(validate_app_exe_name("MSE Launcher.exe").is_ok());
+        assert!(validate_app_exe_name("../evil.exe").is_err());
+        assert!(validate_app_exe_name("sub/evil.exe").is_err());
+        assert!(validate_app_exe_name("C:evil.exe").is_err());
+        assert!(validate_app_exe_name("").is_err());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let setup_exe = build_fake_installer(tmp.path());
+        let file = File::open(&setup_exe).unwrap();
+        let mut reader = SubReader::new(file, 10, 20).unwrap();
+        assert!(reader.seek(SeekFrom::Start(11)).is_err());
+        assert!(reader.seek(SeekFrom::Start(u64::MAX)).is_err());
+        assert!(reader.seek(SeekFrom::End(1)).is_err());
+        assert_eq!(reader.seek(SeekFrom::End(0)).unwrap(), 10);
     }
 }

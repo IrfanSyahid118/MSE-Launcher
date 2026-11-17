@@ -150,6 +150,23 @@ export function SkinSelector(): ReactNode {
   useEffect(() => {
     if (!account) return
 
+    if (accountSkinType === 'steve') {
+      setArmModel('classic')
+      setSkinSlim(false)
+      setSelection(DEFAULT_STEVE)
+      setSelectedSkin('steve')
+      setSelectedSkinType('steve')
+      return
+    }
+    if (accountSkinType === 'alex') {
+      setArmModel('slim')
+      setSkinSlim(true)
+      setSelection(DEFAULT_ALEX)
+      setSelectedSkin('alex')
+      setSelectedSkinType('alex')
+      return
+    }
+
     const isAccountSlim = account.skinVariant === 'slim'
     setArmModel(isAccountSlim ? 'slim' : 'classic')
     setSkinSlim(isAccountSlim)

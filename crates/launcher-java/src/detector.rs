@@ -195,9 +195,24 @@ pub fn parse_java_output(
 pub fn find_candidate_executables(paths: &DataPaths) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    let platform_key = "windows-arm64";
+    #[cfg(all(target_os = "windows", target_arch = "x86"))]
+    let platform_key = "windows-x86";
+    #[cfg(all(
+        target_os = "windows",
+        not(any(target_arch = "aarch64", target_arch = "x86"))
+    ))]
     let platform_key = "windows-x64";
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(target_os = "linux", target_arch = "x86"))]
+    let platform_key = "linux-i386";
+    #[cfg(all(target_os = "linux", not(target_arch = "x86")))]
+    let platform_key = "linux";
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let platform_key = "mac-os-arm64";
+    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+    let platform_key = "mac-os";
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     let platform_key = "linux";
 
     let bin_name = if cfg!(windows) { "java.exe" } else { "java" };
@@ -206,9 +221,20 @@ pub fn find_candidate_executables(paths: &DataPaths) -> Vec<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(&managed_base) {
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                let java_exe = entry.path().join("bin").join(bin_name);
-                if java_exe.exists() {
-                    candidates.push(java_exe);
+                let bundle_exe = entry
+                    .path()
+                    .join("jre.bundle")
+                    .join("Contents")
+                    .join("Home")
+                    .join("bin")
+                    .join(bin_name);
+                if bundle_exe.exists() {
+                    candidates.push(bundle_exe);
+                } else {
+                    let java_exe = entry.path().join("bin").join(bin_name);
+                    if java_exe.exists() {
+                        candidates.push(java_exe);
+                    }
                 }
             }
         }

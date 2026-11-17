@@ -94,8 +94,21 @@ pub fn quarantine_corrupt_file(path: &Path) -> Result<Option<PathBuf>, LauncherE
 /// Jika file rusak/gagal parse -> karantina file ke `*.corrupt-*` lalu kembalikan Ok(None);
 /// jika pembacaan atau karantina gagal -> kembalikan Err agar pemanggil menolak silent overwrite.
 pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, LauncherErrorPayload> {
-    if fs::symlink_metadata(path).is_err() {
-        return Ok(None);
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(LauncherErrorPayload::internal(format!(
+                "Gagal memeriksa berkas {:?}: {}",
+                path, e
+            )))
+        }
+    };
+    if meta.file_type().is_symlink() {
+        return Err(LauncherErrorPayload::invalid_input(format!(
+            "Operasi ditolak: {:?} adalah symlink.",
+            path
+        )));
     }
 
     let content = match fs::read_to_string(path) {

@@ -17,8 +17,8 @@ use launcher_types::{
 use serde::Deserialize;
 
 use crate::curseforge::{
-    get_curseforge_file_with_base, get_curseforge_project_with_base,
-    to_content_version as cf_to_version, API_BASE as CF_API_BASE,
+    get_curseforge_content_type_with_base, get_curseforge_file_with_base,
+    get_curseforge_project_with_base, to_content_version as cf_to_version, API_BASE as CF_API_BASE,
 };
 use crate::modrinth::{
     get_modrinth_project_with_base, get_modrinth_version_with_base,
@@ -181,12 +181,18 @@ fn is_valid_sha1_hex(value: Option<&str>) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
+struct ModrinthEnv {
+    client: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ModrinthIndexFile {
     path: String,
     hashes: HashMap<String, String>,
     downloads: Vec<String>,
     #[serde(rename = "fileSize")]
     file_size: Option<u64>,
+    env: Option<ModrinthEnv>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -786,13 +792,24 @@ where
         let mut entries = Vec::new();
 
         for f in index.files {
-            if let Some(url) = f.downloads.first() {
-                if !is_allowed_mrpack_download_url(url) {
+            if f.env
+                .as_ref()
+                .and_then(|e| e.client.as_deref())
+                .is_some_and(|c| c.eq_ignore_ascii_case("unsupported"))
+            {
+                continue;
+            }
+            if !f.downloads.is_empty() {
+                let Some(url) = f
+                    .downloads
+                    .iter()
+                    .find(|u| is_allowed_mrpack_download_url(u))
+                else {
                     return Err(LauncherErrorPayload::invalid_input(format!(
                         "Domain URL unduhan modpack tidak diizinkan untuk '{}'",
                         f.path
                     )));
-                }
+                };
                 let sha1 = f.hashes.get("sha1").map(|s| s.trim().to_string());
                 if !is_valid_sha1_hex(sha1.as_deref()) {
                     return Err(LauncherErrorPayload::invalid_input(format!(
@@ -884,19 +901,41 @@ where
         )?;
 
         let mc_dir = paths.instances_dir.join(&new_inst.id).join("minecraft");
-        let mods_dir = mc_dir.join("mods");
         let mut items = Vec::new();
         let mut entries = Vec::new();
         let mut blocked_mods = Vec::new();
         let mut failed_mods = Vec::new();
+        let mut cf_types_cache: HashMap<u64, ContentType> = HashMap::new();
 
         for file_ref in manifest.files {
             check_modpack_cancelled(&cancel_flag)?;
+            let proj_id_str = file_ref.project_id.to_string();
+            let content_type = if let Some(&cached) = cf_types_cache.get(&file_ref.project_id) {
+                cached
+            } else {
+                let resolved = get_curseforge_content_type_with_base(
+                    http,
+                    curseforge_base,
+                    cf_api_key,
+                    &proj_id_str,
+                )
+                .await
+                .unwrap_or(ContentType::Mod);
+                cf_types_cache.insert(file_ref.project_id, resolved);
+                resolved
+            };
+            let target_dir = match content_type {
+                ContentType::Resourcepack => mc_dir.join("resourcepacks"),
+                ContentType::Shader => mc_dir.join("shaderpacks"),
+                ContentType::Datapack => mc_dir.join("datapacks"),
+                _ => mc_dir.join("mods"),
+            };
+
             match get_curseforge_file_with_base(
                 http,
                 curseforge_base,
                 cf_api_key,
-                &file_ref.project_id.to_string(),
+                &proj_id_str,
                 file_ref.file_id,
             )
             .await
@@ -913,7 +952,7 @@ where
                             continue;
                         }
                     };
-                    let dest = safe_modpack_file_path(&mods_dir, &cv.file_name)?;
+                    let dest = safe_modpack_file_path(&target_dir, &cv.file_name)?;
                     items.push(DownloadTask {
                         url: dl_url,
                         destination: dest,
@@ -923,9 +962,9 @@ where
                     });
                     entries.push(InstanceContentEntry {
                         provider: ContentProviderId::Curseforge,
-                        project_id: file_ref.project_id.to_string(),
+                        project_id: proj_id_str,
                         version_id: format!("{}:{}", file_ref.project_id, file_ref.file_id),
-                        content_type: ContentType::Mod,
+                        content_type,
                         file_name: cv.file_name,
                         sha1: cv.sha1.unwrap_or_default(),
                         world_folder: None,
@@ -988,15 +1027,29 @@ where
     let mc_dir =
         launcher_security::safe_subpath(&paths.instances_dir, &instance.id)?.join("minecraft");
 
-    let copy_res = if overrides_dir.exists() && overrides_dir.is_dir() {
-        launcher_security::ensure_dir_within(&paths.instances_dir, &mc_dir, false).and_then(|_| {
-            copy_recursive(&overrides_dir, &mc_dir).map_err(|e| {
-                LauncherErrorPayload::file_system(format!("Gagal menyalin folder overrides: {}", e))
-            })
-        })
-    } else {
-        Ok(())
-    };
+    let copy_res = launcher_security::ensure_dir_within(&paths.instances_dir, &mc_dir, false)
+        .and_then(|_| {
+            if overrides_dir.exists() && overrides_dir.is_dir() {
+                copy_recursive(&overrides_dir, &mc_dir).map_err(|e| {
+                    LauncherErrorPayload::file_system(format!(
+                        "Gagal menyalin folder overrides: {}",
+                        e
+                    ))
+                })?;
+            }
+            if provider == ContentProviderId::Modrinth {
+                let client_overrides = unpacked_dir.join("client-overrides");
+                if client_overrides.exists() && client_overrides.is_dir() {
+                    copy_recursive(&client_overrides, &mc_dir).map_err(|e| {
+                        LauncherErrorPayload::file_system(format!(
+                            "Gagal menyalin folder client-overrides: {}",
+                            e
+                        ))
+                    })?;
+                }
+            }
+            Ok(())
+        });
 
     if let Err(e) = copy_res {
         let _ = instances.remove(&instance.id);

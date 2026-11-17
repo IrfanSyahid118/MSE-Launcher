@@ -272,17 +272,28 @@ impl VersionService {
         let explicit_url = artifact.url.trim();
         let base_url = lib_base_url.map(str::trim).unwrap_or("");
         let missing_checksum = artifact.sha1.trim().is_empty();
+        let size_matches = artifact.size == 0
+            || dest
+                .metadata()
+                .map(|m| m.len() == artifact.size)
+                .unwrap_or(false);
 
-        if (explicit_url.is_empty() && base_url.is_empty()) || (missing_checksum && dest.is_file())
+        if (explicit_url.is_empty() && base_url.is_empty())
+            || (missing_checksum && dest.is_file() && size_matches)
         {
             return Ok(());
         }
 
-        let url = if !explicit_url.is_empty() {
+        let raw_url = if !explicit_url.is_empty() {
             artifact.url.clone()
         } else {
             let base_clean = base_url.trim_end_matches('/');
             format!("{}/{}", base_clean, rel_path.trim_start_matches('/'))
+        };
+        let url = if let Some(rest) = raw_url.strip_prefix("http://") {
+            format!("https://{}", rest)
+        } else {
+            raw_url
         };
 
         tasks.push(DownloadTask {
@@ -399,7 +410,11 @@ impl VersionService {
                     .as_deref()
                     .map(|s| !s.trim().is_empty())
                     .unwrap_or(false);
-                if dest.is_file() && !has_sha1 {
+                let expected_size = lib.size.filter(|&s| s > 0);
+                let size_matches = expected_size
+                    .map(|sz| dest.metadata().map(|m| m.len() == sz).unwrap_or(false))
+                    .unwrap_or(true);
+                if dest.is_file() && !has_sha1 && size_matches {
                     continue;
                 }
 
@@ -409,7 +424,12 @@ impl VersionService {
                     .filter(|u| !u.trim().is_empty())
                     .unwrap_or("https://libraries.minecraft.net/");
                 let base_clean = base_url.trim_end_matches('/');
-                let url = format!("{}/{}", base_clean, rel_path.trim_start_matches('/'));
+                let raw_url = format!("{}/{}", base_clean, rel_path.trim_start_matches('/'));
+                let url = if let Some(rest) = raw_url.strip_prefix("http://") {
+                    format!("https://{}", rest)
+                } else {
+                    raw_url
+                };
 
                 tasks.push(DownloadTask {
                     url,

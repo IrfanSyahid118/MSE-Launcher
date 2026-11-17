@@ -136,6 +136,8 @@ async fn installer_run_install(
     let result = tokio::task::spawn_blocking(move || -> Result<DoneEvent, String> {
         let (payload_offset, manifest) = payload::read_payload_manifest(&current_exe)
             .map_err(|e| format!("Payload error: {e}"))?;
+        payload::validate_app_exe_name(&manifest.app_exe_name)
+            .map_err(|e| format!("Invalid manifest executable name: {e}"))?;
 
         let target_dir = PathBuf::from(&target_trimmed);
         let is_portable = options.install_mode == "portable";
@@ -166,10 +168,21 @@ async fn installer_run_install(
             },
         );
         if is_portable {
+            let stale_uninstaller = target_dir.join("uninstall.exe");
+            if stale_uninstaller.exists() {
+                let _ = std::fs::remove_file(&stale_uninstaller);
+            }
+            windows_ops::unregister_uninstall_entry();
+
             let marker = target_dir.join("portable.txt");
             std::fs::write(&marker, b"portable\n")
                 .map_err(|e| format!("Failed to write portable marker: {e}"))?;
         } else {
+            let stale_portable = target_dir.join("portable.txt");
+            if stale_portable.exists() {
+                let _ = std::fs::remove_file(&stale_portable);
+            }
+
             let uninstaller_dest = target_dir.join("uninstall.exe");
             payload::copy_stub_without_payload(&current_exe, payload_offset, &uninstaller_dest)
                 .map_err(|e| format!("Failed to write uninstaller: {e}"))?;

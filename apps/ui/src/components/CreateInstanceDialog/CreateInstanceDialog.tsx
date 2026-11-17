@@ -42,13 +42,14 @@ import { VersionBlockIcon } from '../VersionBlockIcon/VersionBlockIcon'
 import { VersionChannelFilter } from '../VersionChannelFilter/VersionChannelFilter'
 import styles from './CreateInstanceDialog.module.css'
 
-const LOADER_LABELS: Record<'fabric' | 'quilt' | 'forge', string> = {
+const LOADER_LABELS: Record<'fabric' | 'quilt' | 'forge' | 'neoforge', string> = {
   fabric: 'Fabric',
   quilt: 'Quilt',
   forge: 'Forge',
+  neoforge: 'NeoForge',
 }
 
-const CHECKED_LOADERS = ['fabric', 'quilt', 'forge'] as const
+const CHECKED_LOADERS = ['fabric', 'quilt', 'forge', 'neoforge'] as const
 const SEARCH_DEBOUNCE_MS = 300
 
 type InstanceSource = 'vanilla' | 'modrinth' | 'curseforge'

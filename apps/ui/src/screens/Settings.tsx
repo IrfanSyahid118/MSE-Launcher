@@ -460,7 +460,7 @@ export function Settings(): ReactNode {
                 <>
                   <div className={styles.valueRow}>
                     <span className={styles.fieldLabel}>{t('settings.memoryMax')}</span>
-                    <span className={styles.value}>{maxMb} MB</span>
+                    <span className={styles.value}>{Math.min(maxMb, effectiveMaxAllowed)} MB</span>
                   </div>
                   <GlassSlider
                     value={Math.min(maxMb, effectiveMaxAllowed)}
@@ -474,16 +474,16 @@ export function Settings(): ReactNode {
 
                   <div className={styles.valueRow}>
                     <span className={styles.fieldLabel}>{t('settings.memoryMin')}</span>
-                    <span className={styles.value}>{Math.min(minMb, maxMb)} MB</span>
+                    <span className={styles.value}>{Math.min(minMb, maxMb, effectiveMaxAllowed)} MB</span>
                   </div>
                   <GlassSlider
-                    value={Math.min(minMb, maxMb)}
+                    value={Math.min(minMb, maxMb, effectiveMaxAllowed)}
                     min={MEMORY_FLOOR}
-                    max={Math.max(MEMORY_FLOOR, maxMb)}
+                    max={Math.max(MEMORY_FLOOR, Math.min(maxMb, effectiveMaxAllowed))}
                     step={MEMORY_STEP}
                     label={t('settings.memoryMin')}
                     onValueChange={setMinMb}
-                    onValueCommit={(value) => saveMemory(maxMb, value)}
+                    onValueCommit={(value) => saveMemory(Math.min(maxMb, effectiveMaxAllowed), value)}
                   />
 
                   <p className={styles.rowHint}>

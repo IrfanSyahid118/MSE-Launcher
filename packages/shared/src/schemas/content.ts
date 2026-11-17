@@ -97,6 +97,8 @@ export const installModpackRequestSchema = z.object({
   provider: contentProviderIdSchema,
   versionId: z.string().min(1).max(64),
   instanceName: z.string().trim().min(1).max(64).optional(),
+  projectId: z.string().min(1).max(64).optional(),
+  iconUrl: z.string().url().max(2048).optional(),
 })
 
 export const contentCheckUpdatesRequestSchema = z.object({

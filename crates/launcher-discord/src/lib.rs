@@ -202,6 +202,12 @@ impl DiscordRpcService {
                         &mut settings,
                         &mut client,
                     );
+                    if settings.enabled
+                        && settings.show_idle
+                        && matches!(target_state, ActivityState::Clear)
+                    {
+                        target_state = ActivityState::Idle;
+                    }
                     state_changed = true;
                     activity_dirty = true;
                 }
@@ -227,6 +233,12 @@ impl DiscordRpcService {
                             &mut settings,
                             &mut client,
                         );
+                        if settings.enabled
+                            && settings.show_idle
+                            && matches!(target_state, ActivityState::Clear)
+                        {
+                            target_state = ActivityState::Idle;
+                        }
                         state_changed = true;
                         activity_dirty = true;
                     }

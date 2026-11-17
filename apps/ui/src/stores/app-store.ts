@@ -366,9 +366,10 @@ export const useAppStore = create<AppState>((set) => ({
   pushConsoleLines: (lines) => {
     if (lines.length === 0) return
     set((state) => {
+      const keep = 1_500 - Math.min(lines.length, 1_500)
       const next = state.consoleLines.length + lines.length <= 1_500
         ? [...state.consoleLines, ...lines]
-        : [...state.consoleLines.slice(-(1_500 - Math.min(lines.length, 1_500))), ...lines.slice(-1_500)]
+        : [...(keep > 0 ? state.consoleLines.slice(-keep) : []), ...lines.slice(-1_500)]
       return { consoleLines: next }
     })
   },
@@ -376,9 +377,10 @@ export const useAppStore = create<AppState>((set) => ({
   pushLauncherLogs: (lines) => {
     if (lines.length === 0) return
     set((state) => {
+      const keep = 1_500 - Math.min(lines.length, 1_500)
       const next = state.launcherLogs.length + lines.length <= 1_500
         ? [...state.launcherLogs, ...lines]
-        : [...state.launcherLogs.slice(-(1_500 - Math.min(lines.length, 1_500))), ...lines.slice(-1_500)]
+        : [...(keep > 0 ? state.launcherLogs.slice(-keep) : []), ...lines.slice(-1_500)]
       return { launcherLogs: next }
     })
   },

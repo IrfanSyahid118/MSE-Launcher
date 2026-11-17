@@ -125,11 +125,26 @@ pub(crate) async fn build_install_plan_with_bases(
                         if !seen_projects.insert(dep_proj_id.clone()) {
                             continue;
                         }
+                        let proj_type_hint =
+                            get_modrinth_project_with_base(http, modrinth_base, dep_proj_id)
+                                .await
+                                .ok()
+                                .map(|p| p.summary.content_type);
+                        let dep_filter = if matches!(proj_type_hint, Some(ct) if ct != ContentType::Mod)
+                        {
+                            ContentFilter {
+                                minecraft_version: filter.minecraft_version.clone(),
+                                loader: None,
+                                featured: None,
+                            }
+                        } else {
+                            filter.clone()
+                        };
                         match list_modrinth_versions_with_base(
                             http,
                             modrinth_base,
                             dep_proj_id,
-                            &filter,
+                            &dep_filter,
                         )
                         .await
                         {
@@ -231,12 +246,29 @@ pub(crate) async fn build_install_plan_with_bases(
                     if !seen_mod_ids.insert(dep.mod_id) {
                         continue;
                     }
+                    let dep_type_hint = get_curseforge_content_type_with_base(
+                        http,
+                        curseforge_base,
+                        cf_api_key,
+                        &dep.mod_id.to_string(),
+                    )
+                    .await
+                    .unwrap_or(ContentType::Mod);
+                    let dep_filter = if dep_type_hint != ContentType::Mod {
+                        ContentFilter {
+                            minecraft_version: filter.minecraft_version.clone(),
+                            loader: None,
+                            featured: None,
+                        }
+                    } else {
+                        filter.clone()
+                    };
                     match list_curseforge_versions_with_base(
                         http,
                         curseforge_base,
                         cf_api_key,
                         &dep.mod_id.to_string(),
-                        &filter,
+                        &dep_filter,
                     )
                     .await
                     {

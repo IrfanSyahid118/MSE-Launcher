@@ -311,7 +311,9 @@ export function MinecraftSkinViewer3D({
         window.clearTimeout(lostTimerRef.current)
         lostTimerRef.current = null
       }
-      setWebglFailed(false)
+      if (rendererRef.current !== null) {
+        setWebglFailed(false)
+      }
     }
     canvas.addEventListener('webglcontextlost', handleContextLost)
     canvas.addEventListener('webglcontextrestored', handleContextRestored)

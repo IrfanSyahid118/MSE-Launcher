@@ -85,6 +85,10 @@ pub fn merge_version_detail(
             if let Some(j) = p_args.get("jvm").and_then(|v| v.as_array()) {
                 jvm_args.extend(j.clone());
             }
+        } else if let Some(ref legacy) = parent.minecraft_arguments {
+            for token in legacy.split_whitespace() {
+                game_args.push(serde_json::Value::String(token.to_string()));
+            }
         }
 
         if let Some(ref c_args) = profile.arguments {
@@ -190,6 +194,52 @@ mod tests {
         assert_eq!(
             library_key("com.mojang:patchy:1.1@jar"),
             "com.mojang:patchy:"
+        );
+    }
+
+    #[test]
+    fn test_merge_preserves_legacy_minecraft_arguments_when_child_has_arguments() {
+        let parent = MojangVersionDetail {
+            id: "1.12.2".to_string(),
+            main_class: Some("net.minecraft.client.main.Main".to_string()),
+            minecraft_arguments: Some(
+                "--username ${auth_player_name} --version ${version_name}".to_string(),
+            ),
+            ..Default::default()
+        };
+        let profile = LoaderProfile {
+            id: "1.12.2-loader".to_string(),
+            inherits_from: "1.12.2".to_string(),
+            release_time: None,
+            profile_type: None,
+            main_class: None,
+            arguments: Some(serde_json::json!({
+                "game": ["--tweakClass", "ExampleTweaker"],
+                "jvm": ["-Dexample=1"]
+            })),
+            minecraft_arguments: None,
+            libraries: Vec::new(),
+            java_version: None,
+        };
+
+        let merged = merge_version_detail(&parent, &profile).unwrap();
+        let game_args = merged
+            .arguments
+            .as_ref()
+            .and_then(|a| a.get("game"))
+            .and_then(|g| g.as_array())
+            .unwrap();
+        let strs: Vec<&str> = game_args.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            strs,
+            vec![
+                "--username",
+                "${auth_player_name}",
+                "--version",
+                "${version_name}",
+                "--tweakClass",
+                "ExampleTweaker"
+            ]
         );
     }
 }

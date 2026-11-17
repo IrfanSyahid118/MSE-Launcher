@@ -168,7 +168,7 @@ export async function extractSkinFaces(skinSrc: string): Promise<ExtractedSkinRe
 
     img.onload = () => {
       try {
-        const isLegacy = img.naturalHeight === 32
+        const isLegacy = img.naturalHeight * 2 === img.naturalWidth
         const canvas = document.createElement('canvas')
         canvas.width = 64
         canvas.height = 64
@@ -179,7 +179,7 @@ export async function extractSkinFaces(skinSrc: string): Promise<ExtractedSkinRe
         }
 
         ctx.imageSmoothingEnabled = false
-        ctx.drawImage(img, 0, 0)
+        ctx.drawImage(img, 0, 0, 64, isLegacy ? 32 : 64)
 
         if (isLegacy) {
           ctx.drawImage(canvas, 40, 16, 16, 16, 32, 48, 16, 16)
@@ -452,8 +452,8 @@ export async function extractCapeFaces(capeSrc: string | undefined | null): Prom
     img.onload = () => {
       try {
         const canvas = document.createElement('canvas')
-        canvas.width = img.naturalWidth || 64
-        canvas.height = img.naturalHeight || 32
+        canvas.width = 64
+        canvas.height = 32
         const ctx = canvas.getContext('2d')
         if (!ctx) {
           resolve(null)
@@ -461,7 +461,7 @@ export async function extractCapeFaces(capeSrc: string | undefined | null): Prom
         }
 
         ctx.imageSmoothingEnabled = false
-        ctx.drawImage(img, 0, 0)
+        ctx.drawImage(img, 0, 0, 64, 32)
 
         const top = sliceFace(canvas, { x: 1, y: 0, w: 10, h: 1 })
         const bottom = sliceFace(canvas, { x: 11, y: 0, w: 10, h: 1 })

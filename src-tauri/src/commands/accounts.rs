@@ -119,8 +119,8 @@ pub fn enrich_account(acc: &mut Account, skins_dir: &std::path::Path) {
     if let Some(bytes) = read_cached_skin_file(skins_dir, &acc.id, ".png") {
         acc.skin_url = Some(format!("data:image/png;base64,{}", encode_base64(&bytes)));
     } else if let Some(ref mut url) = acc.skin_url {
-        if url.starts_with("http://") {
-            *url = url.replace("http://", "https://");
+        if let Some(rest) = url.strip_prefix("http://") {
+            *url = format!("https://{}", rest);
         } else if !url.starts_with("data:") && !url.starts_with("https://") {
             acc.skin_url = None;
         }
@@ -129,16 +129,16 @@ pub fn enrich_account(acc: &mut Account, skins_dir: &std::path::Path) {
     if let Some(bytes) = read_cached_skin_file(skins_dir, &acc.id, "_cape.png") {
         acc.cape_url = Some(format!("data:image/png;base64,{}", encode_base64(&bytes)));
     } else if let Some(ref mut url) = acc.cape_url {
-        if url.starts_with("http://") {
-            *url = url.replace("http://", "https://");
+        if let Some(rest) = url.strip_prefix("http://") {
+            *url = format!("https://{}", rest);
         } else if !url.starts_with("data:") && !url.starts_with("https://") {
             acc.cape_url = None;
         }
     }
 
     for c in &mut acc.capes {
-        if c.url.starts_with("http://") {
-            c.url = c.url.replace("http://", "https://");
+        if let Some(rest) = c.url.strip_prefix("http://") {
+            c.url = format!("https://{}", rest);
         }
     }
 }
@@ -185,7 +185,7 @@ pub(crate) fn update_skin_with_store(
     let cape_path =
         launcher_security::safe_subpath(skins_dir, &format!("{}_cape.png", existing.id))?;
 
-    let saved_url = if req.skin_data.starts_with("data:image/") {
+    let (skin_bytes, saved_url) = if req.skin_data.starts_with("data:image/") {
         let (_, b64) = req.skin_data.split_once(',').ok_or_else(|| {
             LauncherErrorPayload::invalid_input("Format data URL skin tidak valid.")
         })?;
@@ -193,17 +193,17 @@ pub(crate) fn update_skin_with_store(
             LauncherErrorPayload::invalid_input("Payload base64 skin tidak valid.")
         })?;
         validate_png_bytes(&bytes)?;
-        write_skin_file_safe(skins_dir, &skin_path, &bytes)?;
-        format!("data:image/png;base64,{}", encode_base64(&bytes))
+        let data_url = format!("data:image/png;base64,{}", encode_base64(&bytes));
+        (Some(bytes), data_url)
     } else if req.skin_data.starts_with("https://") || req.skin_data.starts_with("http://") {
-        req.skin_data
+        (None, req.skin_data)
     } else {
         return Err(LauncherErrorPayload::invalid_input(
             "Sumber skin harus berupa data URL PNG atau URL HTTP(S), bukan path file lokal.",
         ));
     };
 
-    let saved_cape = if let Some(ref cape_data) = req.cape_data {
+    let (cape_bytes, saved_cape) = if let Some(ref cape_data) = req.cape_data {
         if cape_data.starts_with("data:image/") {
             let (_, b64) = cape_data.split_once(',').ok_or_else(|| {
                 LauncherErrorPayload::invalid_input("Format data URL cape tidak valid.")
@@ -212,18 +212,30 @@ pub(crate) fn update_skin_with_store(
                 LauncherErrorPayload::invalid_input("Payload base64 cape tidak valid.")
             })?;
             validate_png_bytes(&bytes)?;
-            write_skin_file_safe(skins_dir, &cape_path, &bytes)?;
-            Some(format!("data:image/png;base64,{}", encode_base64(&bytes)))
+            let data_url = format!("data:image/png;base64,{}", encode_base64(&bytes));
+            (Some(bytes), Some(data_url))
         } else if cape_data.starts_with("https://") || cape_data.starts_with("http://") {
-            Some(cape_data.clone())
+            (None, Some(cape_data.clone()))
         } else {
             return Err(LauncherErrorPayload::invalid_input(
                 "Sumber jubah harus berupa data URL PNG atau URL HTTP(S), bukan path file lokal.",
             ));
         }
     } else {
-        None
+        (None, None)
     };
+
+    if let Some(ref bytes) = skin_bytes {
+        write_skin_file_safe(skins_dir, &skin_path, bytes)?;
+    } else {
+        let _ = launcher_security::safe_remove_file_within(skins_dir, &skin_path);
+    }
+
+    if let Some(ref bytes) = cape_bytes {
+        write_skin_file_safe(skins_dir, &cape_path, bytes)?;
+    } else {
+        let _ = launcher_security::safe_remove_file_within(skins_dir, &cape_path);
+    }
 
     let mut updated =
         accounts.update_skin(&existing.id, Some(saved_url), req.skin_variant, saved_cape)?;

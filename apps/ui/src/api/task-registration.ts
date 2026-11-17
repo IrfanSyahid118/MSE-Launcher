@@ -34,10 +34,13 @@ export function handleCleanupTaskDone(
 }
 
 export function handleLaunchTaskDone(queryClient: QueryClient): void {
-  const { setLaunchTaskId, setLaunchProgress, setIsGameRunning } = useAppStore.getState()
+  const { launchInstanceId, setLaunchTaskId, setLaunchProgress, setIsGameRunning } =
+    useAppStore.getState()
   setLaunchTaskId(null)
   setLaunchProgress(null)
-  setIsGameRunning(true)
+  if (launchInstanceId !== null) {
+    setIsGameRunning(true)
+  }
   void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
 }
 

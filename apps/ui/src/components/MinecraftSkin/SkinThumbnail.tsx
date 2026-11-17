@@ -33,6 +33,7 @@ export function SkinThumbnail({
   const [broken, setBroken] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
     setBroken(false)
     const canvas = canvasRef.current
     if (!canvas) return
@@ -41,6 +42,7 @@ export function SkinThumbnail({
 
     const image = new Image()
     image.onload = () => {
+      if (cancelled) return
       const unit = pixel
       canvas.width = 16 * unit
       canvas.height = 32 * unit
@@ -88,24 +90,29 @@ export function SkinThumbnail({
       drawRegions(base)
       drawRegions(overlay)
     }
-    image.onerror = () => setBroken(true)
+    image.onerror = () => {
+      if (!cancelled) setBroken(true)
+    }
     image.src = skinUrl
+    return () => {
+      cancelled = true
+    }
   }, [isSlim, pixel, skinUrl])
 
-  if (broken) {
-    return (
-      <div className={`${styles.placeholder} ${className ?? ''}`} aria-hidden>
-        <span>?</span>
-      </div>
-    )
-  }
-
   return (
-    <canvas
-      ref={canvasRef}
-      className={`${styles.canvas} ${className ?? ''}`}
-      aria-hidden
-      data-testid="skin-thumbnail"
-    />
+    <>
+      {broken ? (
+        <div className={`${styles.placeholder} ${className ?? ''}`} aria-hidden>
+          <span>?</span>
+        </div>
+      ) : null}
+      <canvas
+        ref={canvasRef}
+        className={`${styles.canvas} ${className ?? ''}`}
+        hidden={broken}
+        aria-hidden
+        data-testid="skin-thumbnail"
+      />
+    </>
   )
 }

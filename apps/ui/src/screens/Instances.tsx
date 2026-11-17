@@ -5,7 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Box, Compass, LayoutGrid, List, Play, Plus, Search, Settings2 } from 'lucide-react'
 import type { Instance } from '@mc/shared'
 import { useI18n } from '../i18n'
-import { useInstances } from '../api/queries'
+import { useActiveAccount, useInstances } from '../api/queries'
 import { errorMessage } from '../api/launcher'
 import { registerLaunchTask } from '../api/task-registration'
 import { useAppStore } from '../stores/app-store'
@@ -25,6 +25,7 @@ export function Instances(): ReactNode {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const instancesQuery = useInstances()
+  const activeAccountQuery = useActiveAccount()
   const [search, setSearch] = useState('')
   const [selectedLoader, setSelectedLoader] = useState<string>('all')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
@@ -57,6 +58,10 @@ export function Instances(): ReactNode {
 
   const handleLaunch = async (instance: Instance): Promise<void> => {
     if (launchInFlightRef.current || launchTaskId !== null || isGameRunning) {
+      return
+    }
+    if (!activeAccountQuery.account) {
+      pushToast(t('play.reason.account'), 'error')
       return
     }
     launchInFlightRef.current = true

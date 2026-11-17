@@ -14,14 +14,38 @@ use crate::detector::{parse_java_output, run_java_version};
 pub const RUNTIME_CATALOG_URL: &str =
     "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const PLATFORM_KEY: &str = "windows-arm64";
+#[cfg(all(target_os = "windows", target_arch = "x86"))]
+const PLATFORM_KEY: &str = "windows-x86";
+#[cfg(all(
+    target_os = "windows",
+    not(any(target_arch = "aarch64", target_arch = "x86"))
+))]
 const PLATFORM_KEY: &str = "windows-x64";
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86"))]
+const PLATFORM_KEY: &str = "linux-i386";
+#[cfg(all(target_os = "linux", not(target_arch = "x86")))]
 const PLATFORM_KEY: &str = "linux";
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PLATFORM_KEY: &str = "mac-os-arm64";
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
 const PLATFORM_KEY: &str = "mac-os";
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 const PLATFORM_KEY: &str = "linux";
+
+fn resolve_managed_java_exe(target_dir: &Path) -> PathBuf {
+    let bundle_exe = target_dir
+        .join("jre.bundle")
+        .join("Contents")
+        .join("Home")
+        .join("bin")
+        .join(JAVA_BIN_NAME);
+    if bundle_exe.is_file() {
+        return bundle_exe;
+    }
+    target_dir.join("bin").join(JAVA_BIN_NAME)
+}
 
 #[cfg(windows)]
 const JAVA_BIN_NAME: &str = "java.exe";
@@ -107,7 +131,7 @@ pub fn component_for_major(major: u32) -> &'static str {
         16 => "java-runtime-alpha",
         17 => "java-runtime-gamma",
         21 => "java-runtime-delta",
-        25.. => "java-runtime-epsilon",
+        22.. => "java-runtime-epsilon",
         _ => "java-runtime-delta",
     }
 }
@@ -163,7 +187,7 @@ where
     let _lock = _install_guard.lock().await;
 
     launcher_security::ensure_descendants_no_symlink(&platform_dir, &target_dir)?;
-    let java_exe = target_dir.join("bin").join(JAVA_BIN_NAME);
+    let java_exe = resolve_managed_java_exe(&target_dir);
     launcher_security::ensure_descendants_no_symlink(&target_dir, &java_exe)?;
     let marker_file = target_dir.join(".mse-java-complete.json");
 
@@ -257,6 +281,9 @@ where
     downloader
         .download_all(tasks, progress_callback, cancelled)
         .await?;
+
+    let java_exe = resolve_managed_java_exe(&target_dir);
+    launcher_security::ensure_descendants_no_symlink(&target_dir, &java_exe)?;
 
     #[cfg(unix)]
     {

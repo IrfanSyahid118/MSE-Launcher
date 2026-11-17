@@ -35,11 +35,13 @@ export function AccountDialog({ open, onOpenChange }: AccountDialogProps): React
   const [deviceCode, setDeviceCode] = useState<DeviceCodeInfo | null>(null)
   const [microsoftError, setMicrosoftError] = useState<string | null>(null)
   const microsoftTaskIdRef = useRef<string | null>(null)
+  const microsoftAbortedRef = useRef(false)
 
   const busy = createAccount.isPending || setActiveAccount.isPending
   const microsoftBusy = beginMicrosoft.isPending || completeMicrosoft.isPending
 
   const cancelMicrosoftSignIn = (): void => {
+    microsoftAbortedRef.current = true
     const taskId = microsoftTaskIdRef.current
     if (!taskId) return
     microsoftTaskIdRef.current = null
@@ -104,9 +106,11 @@ export function AccountDialog({ open, onOpenChange }: AccountDialogProps): React
   }
 
   const startMicrosoft = (): void => {
+    microsoftAbortedRef.current = false
     setMicrosoftError(null)
     beginMicrosoft.mutate(undefined, {
       onSuccess: (code) => {
+        if (microsoftAbortedRef.current) return
         setDeviceCode(code)
         openVerificationPage(code.verificationUri)
         const taskId =

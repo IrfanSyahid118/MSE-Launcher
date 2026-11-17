@@ -106,7 +106,8 @@ impl ServerService {
         let accept_val = match entry.resource_pack_policy {
             Some(ServerResourcePackPolicy::Enabled) => Some(1i8),
             Some(ServerResourcePackPolicy::Disabled) => Some(0i8),
-            _ => entry.accept_textures.map(|v| v as i8),
+            Some(ServerResourcePackPolicy::Prompt) => None,
+            None => entry.accept_textures.map(|v| v as i8),
         };
 
         if let Some(val) = accept_val {
@@ -352,6 +353,11 @@ impl ServerService {
         old_ip: &str,
         updated: InstanceServerEntry,
     ) -> Result<Vec<InstanceServerEntry>, LauncherErrorPayload> {
+        if updated.ip.trim().is_empty() {
+            return Err(LauncherErrorPayload::invalid_input(
+                "Alamat server (IP) tidak boleh kosong.",
+            ));
+        }
         let file_path = self.servers_file(instance_id)?;
         let (root, mut server_compounds) = Self::read_servers_raw(&file_path)?;
 

@@ -513,8 +513,12 @@ pub async fn updater_check(
     if let Some(manifest_res) =
         try_fetch_latest_manifest(&http, &current_version, install_mode).await
     {
-        *state.verified_update.write().await = Some(manifest_res.clone());
-        return Ok(manifest_res);
+        if manifest_res.download_url.is_some()
+            || !is_newer_version(&current_version, &manifest_res.latest_version)
+        {
+            *state.verified_update.write().await = Some(manifest_res.clone());
+            return Ok(manifest_res);
+        }
     }
 
     *state.verified_update.write().await = None;
@@ -657,16 +661,20 @@ for ($i = 0; $i -lt 80; $i++) {
     if (-not (Get-Process -Id $pidVal -ErrorAction SilentlyContinue)) { break }
     Start-Sleep -Milliseconds 250
 }
+$moved = $false
 for ($i = 0; $i -lt 10; $i++) {
     try {
         Move-Item -LiteralPath $env:MSE_UPDATE_SRC -Destination $env:MSE_UPDATE_DST -Force
+        $moved = $true
         break
     } catch {
         Start-Sleep -Milliseconds 250
     }
 }
-if (Test-Path -LiteralPath $env:MSE_UPDATE_DST) {
+if ($moved -and (Test-Path -LiteralPath $env:MSE_UPDATE_DST)) {
     Start-Process -FilePath $env:MSE_UPDATE_DST
+} elseif (Test-Path -LiteralPath $env:MSE_UPDATE_SRC) {
+    Start-Process -FilePath $env:MSE_UPDATE_SRC
 }
 "#;
                     let mut cmd = std::process::Command::new("powershell.exe");

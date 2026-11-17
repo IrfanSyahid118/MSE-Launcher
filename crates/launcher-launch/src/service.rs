@@ -1148,6 +1148,8 @@ impl LaunchService {
                         } else if cached_skin_ok {
                             copy_skin_targets(&cached_skin);
                         }
+                    } else if cached_skin_ok {
+                        copy_skin_targets(&cached_skin);
                     } else {
                         let default_bytes = launcher_archive::get_default_skin_bytes(is_slim);
                         write_skin_targets(&default_bytes);
@@ -1174,10 +1176,15 @@ impl LaunchService {
                 expected_sha256: None,
                 expected_size: None,
             };
-            let _ = self
+            if let Err(err) = self
                 .downloader
                 .download_all(vec![task], |_| {}, Arc::clone(cancelled))
-                .await;
+                .await
+            {
+                if err.code == launcher_types::ErrorCode::Cancelled {
+                    return Err(err);
+                }
+            }
             let user_skin_path_chk = user_skin_path.clone();
             let user_skin_lower_chk = user_skin_lower_path.clone();
             let local_skins_dir_chk = local_skins_dir.clone();
@@ -1306,10 +1313,15 @@ impl LaunchService {
                 expected_sha256: None,
                 expected_size: None,
             };
-            let _ = self
+            if let Err(err) = self
                 .downloader
                 .download_all(vec![task], |_| {}, Arc::clone(cancelled))
-                .await;
+                .await
+            {
+                if err.code == launcher_types::ErrorCode::Cancelled {
+                    return Err(err);
+                }
+            }
             let target_cape_chk = target_cape.clone();
             let target_cape_lower_chk = target_cape_lower.clone();
             let local_capes_dir_chk = local_capes_dir.clone();

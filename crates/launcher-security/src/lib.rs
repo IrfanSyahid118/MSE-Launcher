@@ -441,7 +441,7 @@ pub fn canonicalize_with_tail(path: &Path) -> PathBuf {
 
     let mut tail_rev: Vec<std::ffi::OsString> = Vec::new();
     let mut cursor = path;
-    while !cursor.exists() {
+    while fs::symlink_metadata(cursor).is_err() {
         let Some(name) = cursor.file_name() else {
             break;
         };
@@ -452,8 +452,12 @@ pub fn canonicalize_with_tail(path: &Path) -> PathBuf {
         cursor = parent;
     }
 
-    let mut base = if cursor.exists() {
-        dunce::canonicalize(cursor).unwrap_or_else(|_| cursor.to_path_buf())
+    let mut base = if fs::symlink_metadata(cursor).is_ok() {
+        match dunce::canonicalize(cursor) {
+            Ok(canon) => canon,
+            // Broken/dangling symlink at `cursor`: return the original path rather than skipping over it.
+            Err(_) => return path.to_path_buf(),
+        }
     } else {
         return path.to_path_buf();
     };

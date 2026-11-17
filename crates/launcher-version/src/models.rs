@@ -47,8 +47,11 @@ pub struct MojangVersionList {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MojangDownloadArtifact {
     pub path: Option<String>,
+    #[serde(default)]
     pub sha1: String,
+    #[serde(default)]
     pub size: u64,
+    #[serde(default)]
     pub url: String,
 }
 

@@ -275,6 +275,7 @@ impl InstancesStore {
     }
 
     pub fn cleanup_incomplete_modpacks(&self) -> Result<usize, LauncherErrorPayload> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = &self.paths.instances_dir;
         if !dir.exists() {
             return Ok(0);

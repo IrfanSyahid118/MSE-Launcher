@@ -9,6 +9,7 @@ const EXTERNAL_HOST_ALLOWLIST: &[&str] = &[
     "microsoftonline.com",
     "live.com",
     "minecraft.net",
+    "github.com",
 ];
 
 pub fn validate_external_url(url: &str) -> Result<Url, LauncherErrorPayload> {

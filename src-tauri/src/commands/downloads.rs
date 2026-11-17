@@ -61,10 +61,10 @@ fn clean_dir_entries(dir: &std::path::Path, removed_files: &mut usize, freed_byt
             clean_dir_entries(&p, removed_files, freed_bytes);
             let _ = std::fs::remove_dir(&p);
         } else {
-            if ft.is_file() {
-                *freed_bytes += meta.len();
-            }
             if std::fs::remove_file(&p).is_ok() {
+                if ft.is_file() {
+                    *freed_bytes += meta.len();
+                }
                 *removed_files += 1;
             }
         }
