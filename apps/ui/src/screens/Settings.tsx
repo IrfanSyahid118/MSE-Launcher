@@ -34,7 +34,7 @@ const PARALLEL_MAX = 16
 
 type Category = 'appearance' | 'language' | 'java' | 'downloads' | 'discord'
 
-const APP_VERSION = '1.2.0-beta'
+const APP_VERSION = '1.2.1-beta'
 
 function platformLabel(): string {
   const agent = navigator.userAgent

@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-archive"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "dunce",
  "launcher-security",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-auth"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "chrono",
  "launcher-net",
@@ -2017,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-content"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "dunce",
  "futures-util",
@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-discord"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "discord-rich-presence",
  "launcher-types",
@@ -2054,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-download"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "futures-util",
  "hex",
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-installer"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "serde",
  "serde_json",
@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-java"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "dunce",
  "launcher-download",
@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-launch"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "chrono",
  "dunce",
@@ -2135,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-loader"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "hex",
  "launcher-net",
@@ -2157,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-net"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "fastrand",
  "launcher-types",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-platform"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "chrono",
  "dunce",
@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-security"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "dunce",
  "launcher-types",
@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-servers"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "chrono",
  "fastrand",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-storage"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "chrono",
  "dunce",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-types"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "chrono",
  "serde",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-version"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "chrono",
  "hex",
@@ -2429,7 +2429,7 @@ checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
 name = "minecraft-launcher-desktop"
-version = "1.2.0-beta"
+version = "1.2.1-beta"
 dependencies = [
  "launcher-archive",
  "launcher-auth",
