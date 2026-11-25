@@ -32,7 +32,7 @@ Visit the **[Releases](https://github.com/IrfanSyahid118/MSE-Launcher/releases/l
 - **Version & Mod Loader Management:** Supports Vanilla releases, snapshots, beta/alpha versions, plus **Fabric**, **Quilt**, **NeoForge**, and **Forge** installers.
 - **Mod & Modpack Browser:** Search and install mods, modpacks (`.mrpack` and CurseForge `.zip`), resource packs, shader packs, and worlds from **Modrinth** and **CurseForge** with SHA-1 integrity verification.
 - **Microsoft & Offline Accounts + 3D Skin Viewer:** Sign in with Microsoft OAuth or create offline profiles, complete with an interactive WebGL 3D character preview (Classic 4px and Slim 3px models) and custom skin uploads.
-- **Built-in Auto-Updater (`v1.0.0-beta+`):** Check for updates directly inside the launcher. It automatically detects whether you are running the **Portable** or **Installer** edition, downloads the matching binary, verifies its SHA-256 checksum, and applies the update.
+- **Built-in Auto-Updater (`v1.2.1-beta`):** Check for updates directly inside the launcher. It automatically detects whether you are running the **Portable** or **Installer** edition, downloads the matching binary, verifies its SHA-256 checksum, and applies the update.
 - **Isolated Instances & Java Runtime Management:** Keep separate game directories per profile, automatically resolve Mojang Java runtimes (`jre-legacy`, `java-runtime-*`) or system Java, tune RAM limits and JVM presets, manage `servers.dat`, browse screenshots, and inspect live console/diagnostic bundles (`MCSE1:...`).
 - **Optional Discord Rich Presence:** Displays idle or in-game instance status via local Discord IPC (can be toggled off in Settings).
 - **Security Controls:** Windows DPAPI and Linux AES-256-GCM (`0600` key) encrypted token storage (`secrets.bin`), heap buffer `zeroize`, atomic JSON persistence with corruption quarantine, path traversal/symlink guards, and ZIP extraction quotas. See [SECURITY.md](SECURITY.md) for the full threat model.
@@ -54,7 +54,7 @@ Buka halaman **[Releases](https://github.com/IrfanSyahid118/MSE-Launcher/release
 - **Pengelola Versi & Mod Loader:** Mendukung Minecraft Vanilla (Release, Snapshot, Beta/Alpha) serta instalasi otomatis **Fabric**, **Quilt**, **NeoForge**, dan **Forge**.
 - **Browser Mod & Modpack:** Cari dan pasang mod, modpack (`.mrpack` dan CurseForge `.zip`), resource pack, shader pack, serta world langsung dari **Modrinth** dan **CurseForge** lengkap dengan verifikasi integritas SHA-1.
 - **Akun Microsoft & Offline + 3D Skin Viewer:** Login dengan akun Microsoft atau gunakan profil offline, dilengkapi pratinjau karakter 3D interaktif (model Classic 4px & Slim 3px) dan unggah skin kustom.
-- **Auto-Updater Bawaan (`v1.0.0-beta+`):** Cek dan pasang pembaruan langsung dari launcher (sidebar bawah / Settings). Launcher otomatis mengenali apakah kamu memakai versi **Portable** atau **Installer**, memverifikasi SHA-256, lalu memperbarui aplikasi secara otomatis.
+- **Auto-Updater Bawaan (`v1.2.1-beta`):** Cek dan pasang pembaruan langsung dari launcher (sidebar bawah / Settings). Launcher otomatis mengenali apakah kamu memakai versi **Portable** atau **Installer**, memverifikasi SHA-256, lalu memperbarui aplikasi secara otomatis.
 - **Instance Terisolasi & Pengaturan Java:** Pisahkan folder game per instance, gunakan Java bawaan Mojang (`jre-legacy`, `java-runtime-*`) atau Java sistem, atur batas RAM & preset JVM, kelola daftar server multiplayer (`servers.dat`), buka galeri screenshot, serta pantau konsol live & diagnostic bundle (`MCSE1:...`).
 - **Discord Rich Presence (Opsional):** Menampilkan status sedang di menu atau bermain instance tertentu di Discord lokal (bisa dimatikan di Settings).
 - **Keamanan Data:** Penyimpanan token terenkripsi (Windows DPAPI & Linux AES-256-GCM `secrets.bin`), pembersihan memori sensitif (`zeroize`), penyimpanan JSON atomik, proteksi path traversal/symlink, serta batas ukuran ekstraksi arsip. Detail lengkap ada di [SECURITY.md](SECURITY.md).
@@ -63,7 +63,17 @@ Buka halaman **[Releases](https://github.com/IrfanSyahid118/MSE-Launcher/release
 
 ## Version History / Riwayat Versi
 
-### `v1.0.0-beta` — Initial Beta Release *(Latest)*
+Current version: **`v1.2.1-beta`** (see [CHANGELOG.md](CHANGELOG.md)). The `src-tauri/tauri.conf.json` bundle version is `1.2.1` (without the `-beta` suffix); the workspace version in `Cargo.toml` / `package.json` is `1.2.1-beta`. The internal `@mc/shared` package stays at `0.0.0` — it is not the app version.
+
+### `v1.2.1-beta` — Latest
+- **EN:** Custom Tauri GUI installer and uninstaller, plus critical security, launch, modpack, and UI bug fixes.
+- **ID:** Installer dan uninstaller GUI Tauri kustom, plus perbaikan bug kritis keamanan, launch, modpack, dan UI.
+
+### `v1.2.0-beta`
+- **EN:** Deep debug fixes across launcher crates, IPC, and UI; redundant code comment cleanup.
+- **ID:** Perbaikan debug mendalam di seluruh launcher crate, IPC, dan UI; pembersihan komentar kode yang redundan.
+
+### `v1.0.0-beta` — Initial Beta Release
 - **EN:** First beta release of MSE Launcher with Vanilla & mod loader management (Fabric, Quilt, NeoForge, Forge), Modrinth & CurseForge browser, Microsoft/offline accounts, 3D skin viewer, isolated instances, Java & RAM manager, server list manager, screenshot gallery, Discord Rich Presence, in-app SHA-256 verified auto-updater (**Portable** vs **Installer**), and compile-time CurseForge proxy support.
 - **ID:** Rilis beta pertama MSE Launcher dengan dukungan Vanilla & mod loader (Fabric, Quilt, NeoForge, Forge), browser Modrinth & CurseForge, akun Microsoft/offline, 3D skin viewer, instance terisolasi, pengelola Java & RAM, pengelola daftar server, galeri screenshot, Discord Rich Presence, auto-updater bawaan terverifikasi SHA-256 (**Portable** vs **Installer**), serta dukungan proxy CurseForge saat compile time.
 
@@ -73,7 +83,7 @@ Buka halaman **[Releases](https://github.com/IrfanSyahid118/MSE-Launcher/release
 
 ### CurseForge API (Proxy Mode or BYOK)
 MSE Launcher does **not** store a hardcoded CurseForge API key in source code.
-- **Official Release Binaries (`v1.0.0-beta+`):** Ship with a compile-time default proxy endpoint (`MCLAUNCHER_DEFAULT_CF_PROXY`) so CurseForge browsing works out of the box without exposing private URLs in the repository.
+- **Official Release Binaries (`v1.2.1-beta`):** Ship with a compile-time default proxy endpoint (`MCLAUNCHER_DEFAULT_CF_PROXY`) so CurseForge browsing works out of the box without exposing private URLs in the repository.
 - **Source Builds / Custom Configuration:**
   - **Proxy Mode:** Set `CURSEFORGE_PROXY_URL` (or compile-time `MCLAUNCHER_DEFAULT_CF_PROXY`) or set `curseforgeProxyUrl` in `%APPDATA%\MCLauncher\integrations.json` (`~/.local/share/mclauncher/integrations.json` on Linux) pointing to an HTTPS reverse proxy (for example, a Cloudflare Worker that injects `x-api-key` server-side).
   - **Direct API Key (BYOK):** Set `CURSEFORGE_API_KEY` (environment variable) or store `curseforgeApiKey` in `integrations.json` / Settings.
@@ -106,6 +116,7 @@ The launcher does **not** run analytics or telemetry servers. Outgoing connectio
 │   ├── launcher-content     # Modrinth & CurseForge client, modpack installer
 │   ├── launcher-discord     # Local Discord Rich Presence IPC service
 │   ├── launcher-download    # Parallel HTTPS downloader with SHA-1/SHA-256 verification
+│   ├── launcher-installer   # Custom Tauri GUI installer and uninstaller (Windows)
 │   ├── launcher-java        # Mojang JRE resolver & local Java validation
 │   ├── launcher-launch      # JVM argument builder & game process lifecycle
 │   ├── launcher-loader      # Fabric, Quilt, Forge, NeoForge installer resolver
@@ -126,9 +137,9 @@ The launcher does **not** run analytics or telemetry servers. Outgoing connectio
 ## Development
 
 ### Prerequisites
-- **Node.js** >= 24 (Node 26 supported)
-- **pnpm**
-- **Rust & Cargo** (`stable`, see [rust-toolchain.toml](rust-toolchain.toml))
+- **Node.js** >= 24 (Node 26 supported; CI currently uses Node 24)
+- **pnpm** 12.16.1 (see `packageManager` in [package.json](package.json))
+- **Rust & Cargo** (`stable`, see [rust-toolchain.toml](rust-toolchain.toml)) — the toolchain is not pinned to a specific Rust version, so builds are not fully reproducible across time
 - **Windows:** Microsoft C++ Build Tools (Windows SDK)
 - **Linux:** WebKitGTK 4.1 & Tauri v2 system dependencies (`libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `patchelf`, `libasound2-dev`)
 

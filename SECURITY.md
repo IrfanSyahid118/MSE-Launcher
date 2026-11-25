@@ -4,8 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 1.0.x (Beta) | Yes |
-| < 1.0.0 | No |
+| 1.2.x (Beta) | Yes |
+| < 1.2.0 | No |
 
 ## Reporting a Vulnerability
 
