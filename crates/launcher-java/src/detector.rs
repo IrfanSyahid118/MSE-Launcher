@@ -365,9 +365,16 @@ pub fn detect_all_installations(paths: &DataPaths) -> Vec<JavaInstallation> {
 
 #[cfg(test)]
 mod tests {
+    // Only used by the Windows-only test below; without this the import
+    // is unused (and CI clippy runs with -D warnings) on Linux/macOS.
+    #[cfg(windows)]
     use super::*;
 
+    // javaw.exe -> java.exe is Windows-only behaviour: on non-Windows the
+    // security validator only accepts an executable named "java", so this
+    // test can never pass on Linux/macOS.
     #[test]
+    #[cfg(windows)]
     fn test_resolve_probe_executable_switches_javaw_to_java() {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
