@@ -11,7 +11,6 @@
 
 > [!WARNING]
 > **AI / Vibe Coding Notice:** This application was built using an **AI**.
-> *(**Peringatan:** Aplikasi ini dibuat menggunakan **AI**.)*
 
 **[English](#english)** · **[Bahasa Indonesia](#bahasa-indonesia)** · **[Version History / Riwayat Versi](#version-history--riwayat-versi)** · **[Development](#development)**
 
