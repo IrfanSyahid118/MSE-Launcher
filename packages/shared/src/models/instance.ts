@@ -47,3 +47,12 @@ export interface CreateInstanceRequest {
   minecraftVersion: string
   loader: LoaderSpec
 }
+
+export interface InstanceScreenshot {
+  instanceId: string
+  instanceName: string
+  fileName: string
+  filePath: string
+  sizeBytes: number
+  modifiedAt: string
+}

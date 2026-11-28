@@ -108,9 +108,16 @@ pub async fn launch_start(
         let app2 = app_clone.clone();
         let inst_id2 = inst_id_clone.clone();
         let discord_exit = discord.clone();
+        let launch_exit = launch_service.clone();
         let logs_exit = logs.clone();
         let on_exit = move |code: Option<i32>| {
-            discord_exit.set_idle();
+            let discord_idle = discord_exit.clone();
+            let launch_check = launch_exit.clone();
+            tokio::spawn(async move {
+                if !launch_check.has_running_instances().await {
+                    discord_idle.set_idle();
+                }
+            });
             match code {
                 Some(0) => logs_exit.record_entry(
                     "system",
@@ -203,7 +210,7 @@ pub async fn kill_instance_and_update_discord(
     instance_id: &str,
 ) -> Result<(), LauncherErrorPayload> {
     let res = launch.kill(instance_id).await;
-    if res.is_ok() {
+    if res.is_ok() && !launch.has_running_instances().await {
         discord.set_idle();
     }
     res

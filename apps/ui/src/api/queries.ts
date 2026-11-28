@@ -11,6 +11,7 @@ import type {
   DeviceCodeInfo,
   InstallModpackRequest,
   Instance,
+  InstanceScreenshot,
   InstanceServerEntry,
   IntegrationsStatus,
   JavaInstallation,
@@ -548,5 +549,14 @@ export function usePingInstanceServer() {
         void queryClient.invalidateQueries({ queryKey: ['servers', vars.instanceId] })
       }
     },
+  })
+}
+
+export function useInstanceScreenshots(instanceId?: string) {
+  return useQuery<InstanceScreenshot[]>({
+    queryKey: ['instances', 'screenshots', instanceId ?? 'all'],
+    queryFn: () =>
+      invoke('instances:listScreenshots', instanceId ? { instanceId } : {}),
+    staleTime: 10_000,
   })
 }

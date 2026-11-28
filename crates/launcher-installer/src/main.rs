@@ -78,12 +78,9 @@ fn installer_get_state() -> InstallerState {
         .unwrap_or_else(|| (false, env!("CARGO_PKG_VERSION").to_string()));
 
     let uninstall_dir = if uninstall_mode {
-        windows_ops::read_registered_install_location()
-            .or_else(|| {
-                current_exe
-                    .as_deref()
-                    .and_then(|p| p.parent().map(PathBuf::from))
-            })
+        current_exe
+            .as_deref()
+            .and_then(|p| p.parent().map(PathBuf::from))
             .map(|p| p.to_string_lossy().to_string())
     } else {
         None
@@ -150,7 +147,7 @@ async fn installer_run_install(
             .map_err(|e| format!("Failed to create target directory: {e}"))?;
 
         let exe_dest = target_dir.join(&manifest.app_exe_name);
-        let extracted_bytes = payload::extract_payload_app(
+        let _extracted_bytes = payload::extract_payload_app(
             &current_exe,
             payload_offset,
             &manifest.app_exe_name,
@@ -172,7 +169,6 @@ async fn installer_run_install(
             if stale_uninstaller.exists() {
                 let _ = std::fs::remove_file(&stale_uninstaller);
             }
-            windows_ops::unregister_uninstall_entry();
 
             let marker = target_dir.join("portable.txt");
             std::fs::write(&marker, b"portable\n")
@@ -198,16 +194,6 @@ async fn installer_run_install(
                     windows_ops::create_shortcut(&exe_dest, &start_lnk, "MSE Launcher")?;
                 }
             }
-
-            emit_progress(&app, 93, "registry");
-            let size_kb = (extracted_bytes / 1024).max(1);
-            windows_ops::register_uninstall_entry(
-                &target_dir,
-                &exe_dest,
-                &uninstaller_dest,
-                &manifest.version,
-                size_kb,
-            )?;
         }
 
         if is_portable && options.desktop_shortcut {
@@ -234,24 +220,22 @@ async fn installer_run_uninstall(
     remove_user_data: bool,
 ) -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let install_dir = windows_ops::read_registered_install_location()
-        .or_else(|| current_exe.parent().map(PathBuf::from))
+    let install_dir = current_exe
+        .parent()
+        .map(PathBuf::from)
         .ok_or_else(|| "Unable to determine install directory.".to_string())?;
 
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         emit_progress(&app, 15, "closing");
         windows_ops::close_running_launcher();
 
-        emit_progress(&app, 40, "shortcuts");
+        emit_progress(&app, 45, "shortcuts");
         if let Some(desktop_lnk) = windows_ops::desktop_shortcut_path() {
             let _ = std::fs::remove_file(desktop_lnk);
         }
         if let Some(start_lnk) = windows_ops::start_menu_shortcut_path() {
             let _ = std::fs::remove_file(start_lnk);
         }
-
-        emit_progress(&app, 60, "registry");
-        windows_ops::unregister_uninstall_entry();
 
         emit_progress(&app, 80, "removing");
         for file_name in [

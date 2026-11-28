@@ -223,6 +223,7 @@ pub(crate) async fn get_modrinth_project_with_base(
     api_base: &str,
     project_id: &str,
 ) -> Result<ContentProject, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(project_id)?;
     let url = format!("{}/project/{}", api_base, project_id);
     let res = http.get(&url).await?;
     let proj: ModrinthProjectResponse = res.json().await.map_err(|e| {
@@ -262,6 +263,7 @@ pub(crate) async fn list_modrinth_versions_with_base(
     project_id: &str,
     filter: &ContentFilter,
 ) -> Result<Vec<ModrinthVersionDetail>, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(project_id)?;
     let mut url = Url::parse(&format!("{}/project/{}/version", api_base, project_id))
         .map_err(|e| LauncherErrorPayload::internal(format!("Invalid URL: {}", e)))?;
 
@@ -301,6 +303,7 @@ pub(crate) async fn get_modrinth_version_with_base(
     api_base: &str,
     version_id: &str,
 ) -> Result<ModrinthVersionDetail, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(version_id)?;
     let url = format!("{}/version/{}", api_base, version_id);
     let res = http.get(&url).await?;
     let detail: ModrinthVersionDetail = res.json().await.map_err(|e| {

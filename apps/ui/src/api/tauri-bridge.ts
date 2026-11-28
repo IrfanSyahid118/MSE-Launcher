@@ -8,6 +8,30 @@ function channelToCommand(channel: string): string {
     .toLowerCase()
 }
 
+const REQ_WRAPPED_CHANNELS = new Set([
+  'instances:create',
+  'instances:update',
+  'loaders:versions',
+  'accounts:updateSkin',
+  'accounts:syncMinecraft',
+  'accounts:setActiveCape',
+  'accounts:installSkinResourcePack',
+  'content:search',
+  'content:project',
+  'content:versions',
+  'content:plan',
+  'content:install',
+  'content:remove',
+  'content:toggle',
+  'content:installModpack',
+  'servers:add',
+  'servers:remove',
+  'servers:edit',
+  'servers:ping',
+  'integrations:setCurseForgeKey',
+  'integrations:setAzureClientId',
+])
+
 interface TauriErrorPayload {
   code?: string
   message?: string
@@ -26,11 +50,18 @@ export function initTauriBridge(): void {
           const commandName = channelToCommand(channel)
           let args: Record<string, unknown> = {}
           if (request !== null && typeof request === 'object' && !Array.isArray(request)) {
-            args = {
-              ...(request as Record<string, unknown>),
-              req: request,
-              patch: request,
-              request,
+            if (channel === 'settings:set') {
+              args = { patch: request }
+            } else if (channel === 'auth:completeMicrosoft') {
+              const record = request as Record<string, unknown>
+              args = {
+                req: request,
+                ...(record.taskId !== undefined ? { taskId: record.taskId } : {}),
+              }
+            } else if (REQ_WRAPPED_CHANNELS.has(channel)) {
+              args = { req: request }
+            } else {
+              args = request as Record<string, unknown>
             }
           } else if (request !== undefined && request !== null) {
             args = { request }

@@ -11,7 +11,12 @@ import type {
   SearchQuery,
   SearchResult,
 } from '../models/content'
-import type { CreateInstanceRequest, Instance, LoaderType } from '../models/instance'
+import type {
+  CreateInstanceRequest,
+  Instance,
+  InstanceScreenshot,
+  LoaderType,
+} from '../models/instance'
 import type { IntegrationsStatus } from '../models/integrations'
 import type { DeviceCodeInfo, JavaInstallation } from '../models/java-auth'
 import type { DiagnosticReportResult, LogLine } from '../models/progress'
@@ -87,6 +92,10 @@ export interface IpcInvokeMap {
   'instances:openFolder': {
     req: { id: string; subfolder?: 'mods' | 'resourcepacks' | 'saves' | 'shaderpacks' | 'screenshots' | 'logs' | undefined }
     res: void
+  }
+  'instances:listScreenshots': {
+    req: { instanceId?: string | undefined }
+    res: InstanceScreenshot[]
   }
   'downloads:cleanup': { req: void; res: { taskId: string } }
   'launch:start': {

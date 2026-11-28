@@ -123,6 +123,40 @@ pub fn resolve_data_root() -> PathBuf {
     std::env::temp_dir().join(format!(".{}", APP_DIR_NAME.to_lowercase()))
 }
 
+pub fn parse_proc_meminfo(content: &str) -> Option<MemoryInfo> {
+    let mut total_kb: Option<u64> = None;
+    let mut available_kb: Option<u64> = None;
+    let mut free_kb: Option<u64> = None;
+
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(key) = parts.next() else {
+            continue;
+        };
+        let Some(val_str) = parts.next() else {
+            continue;
+        };
+        let Ok(val_kb) = val_str.parse::<u64>() else {
+            continue;
+        };
+        match key {
+            "MemTotal:" => total_kb = Some(val_kb),
+            "MemAvailable:" => available_kb = Some(val_kb),
+            "MemFree:" => free_kb = Some(val_kb),
+            _ => {}
+        }
+    }
+
+    let total_mb = total_kb? / 1024;
+    let free_mb = available_kb.or(free_kb).unwrap_or(0) / 1024;
+    let used_mb = total_mb.saturating_sub(free_mb);
+    Some(MemoryInfo {
+        total_mb: total_mb.max(1),
+        free_mb,
+        used_mb,
+    })
+}
+
 /// Mendapatkan informasi memori sistem fisik aktual.
 pub fn get_system_memory() -> MemoryInfo {
     #[cfg(windows)]
@@ -143,6 +177,15 @@ pub fn get_system_memory() -> MemoryInfo {
                     free_mb,
                     used_mb,
                 };
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+            if let Some(info) = parse_proc_meminfo(&content) {
+                return info;
             }
         }
     }
@@ -186,5 +229,19 @@ mod tests {
     fn test_resolve_data_root() {
         let root = resolve_data_root();
         assert!(root.to_string_lossy().contains(APP_DIR_NAME));
+    }
+
+    #[test]
+    fn test_parse_proc_meminfo() {
+        let sample = "\
+MemTotal:       32768000 kB
+MemFree:         4096000 kB
+MemAvailable:   16384000 kB
+Buffers:          512000 kB
+";
+        let info = parse_proc_meminfo(sample).expect("should parse /proc/meminfo");
+        assert_eq!(info.total_mb, 32000);
+        assert_eq!(info.free_mb, 16000);
+        assert_eq!(info.used_mb, 16000);
     }
 }

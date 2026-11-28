@@ -947,52 +947,66 @@ impl ContentService {
             l => Some(format!("{:?}", l).to_lowercase()),
         };
 
-        let mut updates = Vec::new();
+        use futures_util::stream::{self, StreamExt};
 
-        for entry in &instance.content {
-            if matches!(
-                entry.content_type,
-                ContentType::Modpack | ContentType::World
-            ) {
-                continue;
-            }
-            if entry.project_id.trim().is_empty()
-                || entry.project_id.contains('/')
-                || entry.project_id.contains('\\')
-                || entry.project_id == entry.version_id
-            {
-                continue;
-            }
-            let filter = ContentFilter {
-                minecraft_version: Some(instance.minecraft_version.clone()),
-                loader: match entry.content_type {
-                    ContentType::Mod => instance_loader.clone(),
-                    ContentType::Datapack => Some("datapack".to_string()),
-                    ContentType::Resourcepack
-                    | ContentType::Shader
-                    | ContentType::Modpack
-                    | ContentType::World => None,
-                },
-                featured: None,
-            };
-            if let Ok(versions) = self
-                .versions(entry.provider, &entry.project_id, filter)
-                .await
-            {
-                if let Some(latest) = versions.first() {
-                    if latest.id != entry.version_id {
-                        updates.push(ContentUpdateInfo {
-                            provider: entry.provider,
-                            project_id: entry.project_id.clone(),
-                            current_version_id: entry.version_id.clone(),
-                            latest_version_id: latest.id.clone(),
-                            latest_version_number: latest.version_number.clone(),
-                            file_name: latest.file_name.clone(),
-                        });
-                    }
+        let candidates: Vec<(ContentProviderId, String, String, ContentFilter)> = instance
+            .content
+            .iter()
+            .filter(|entry| {
+                let is_trackable = !matches!(
+                    entry.content_type,
+                    ContentType::Modpack | ContentType::World
+                );
+                is_trackable
+                    && !entry.project_id.trim().is_empty()
+                    && !entry.project_id.contains('/')
+                    && !entry.project_id.contains('\\')
+                    && entry.project_id != entry.version_id
+            })
+            .map(|entry| {
+                let filter = ContentFilter {
+                    minecraft_version: Some(instance.minecraft_version.clone()),
+                    loader: match entry.content_type {
+                        ContentType::Mod => instance_loader.clone(),
+                        ContentType::Datapack => Some("datapack".to_string()),
+                        ContentType::Resourcepack
+                        | ContentType::Shader
+                        | ContentType::Modpack
+                        | ContentType::World => None,
+                    },
+                    featured: None,
+                };
+                (
+                    entry.provider,
+                    entry.project_id.clone(),
+                    entry.version_id.clone(),
+                    filter,
+                )
+            })
+            .collect();
+
+        let results: Vec<Option<ContentUpdateInfo>> = stream::iter(candidates)
+            .map(|(provider, project_id, current_version_id, filter)| async move {
+                let versions = self.versions(provider, &project_id, filter).await.ok()?;
+                let latest = versions.first()?;
+                if latest.id != current_version_id {
+                    Some(ContentUpdateInfo {
+                        provider,
+                        project_id,
+                        current_version_id,
+                        latest_version_id: latest.id.clone(),
+                        latest_version_number: latest.version_number.clone(),
+                        file_name: latest.file_name.clone(),
+                    })
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .buffer_unordered(6)
+            .collect()
+            .await;
+
+        let updates = results.into_iter().flatten().collect();
 
         Ok(updates)
     }

@@ -126,3 +126,14 @@ pub struct CreateInstanceRequest {
     pub minecraft_version: String,
     pub loader: LoaderSpec,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceScreenshot {
+    pub instance_id: String,
+    pub instance_name: String,
+    pub file_name: String,
+    pub file_path: String,
+    pub size_bytes: u64,
+    pub modified_at: String,
+}

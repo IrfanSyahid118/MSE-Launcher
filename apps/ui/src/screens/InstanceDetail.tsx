@@ -37,7 +37,9 @@ import type {
   ContentProviderId,
   ContentType,
   InstanceContentEntry,
+  InstanceJavaMode,
   InstanceServerEntry,
+  JvmPreset,
   LoaderType,
   ServerPingStatus,
   ServerResourcePackPolicy,
@@ -53,21 +55,25 @@ import {
   useEditInstanceServer,
   useInstanceServers,
   useInstances,
+  useLoaderVersions,
+  useMemoryInfo,
   useRemoveContent,
   useRemoveInstance,
   useRemoveInstanceServer,
+  useSettings,
   useToggleContent,
   useUpdateInstance,
   useVersions,
 } from '../api/queries'
 import { errorMessage, invoke } from '../api/launcher'
-import { registerCleanupTask, registerLaunchTask } from '../api/task-registration'
+import { registerLaunchTask } from '../api/task-registration'
 import { useAppStore } from '../stores/app-store'
 import { GlassButton } from '../components/GlassButton/GlassButton'
 import { GlassCard } from '../components/GlassCard/GlassCard'
 import { GlassDialog } from '../components/GlassDialog/GlassDialog'
 import { GlassSelect } from '../components/GlassSelect/GlassSelect'
 import type { GlassSelectOption } from '../components/GlassSelect/GlassSelect'
+import { GlassSlider } from '../components/GlassSlider/GlassSlider'
 import { GlassSwitch } from '../components/GlassSwitch/GlassSwitch'
 import { InstanceDownloader } from '../components/InstanceDownloader/InstanceDownloader'
 import { InstanceIcon } from '../components/InstanceIcon/InstanceIcon'
@@ -325,6 +331,8 @@ export function InstanceDetail(): ReactNode {
   const removeContent = useRemoveContent()
   const toggleContent = useToggleContent()
   const versionsQuery = useVersions()
+  const settingsQuery = useSettings()
+  const memoryQuery = useMemoryInfo()
   const pushToast = useAppStore((state) => state.pushToast)
   const setLaunchInstanceId = useAppStore((state) => state.setLaunchInstanceId)
   const setLastLaunchInstanceId = useAppStore((state) => state.setLastLaunchInstanceId)
@@ -337,7 +345,6 @@ export function InstanceDetail(): ReactNode {
   const [activeTab, setActiveTab] = useState<InstanceManageTab>('overview')
   const [viewMode, setViewMode] = useState<'manager' | 'downloader'>('manager')
   const [deleteOpen, setDeleteOpen] = useState(false)
-  const [deleteGameData, setDeleteGameData] = useState(true)
   const [searchFilter, setSearchFilter] = useState('')
 
   const [editName, setEditName] = useState('')
@@ -345,6 +352,13 @@ export function InstanceDetail(): ReactNode {
   const [editLoaderType, setEditLoaderType] = useState<LoaderType>('vanilla')
   const [editLoaderVersion, setEditLoaderVersion] = useState<string | null>(null)
   const [editIconUrl, setEditIconUrl] = useState<string | null>(null)
+  const [editMemoryOverride, setEditMemoryOverride] = useState(false)
+  const [editMinMb, setEditMinMb] = useState(1024)
+  const [editMaxMb, setEditMaxMb] = useState(4096)
+  const [editJavaMode, setEditJavaMode] = useState<InstanceJavaMode>('auto')
+  const [editJavaPath, setEditJavaPath] = useState('')
+  const [editJvmPreset, setEditJvmPreset] = useState<JvmPreset>('default')
+  const [editJvmExtra, setEditJvmExtra] = useState('')
   const [isDetectingIcon, setIsDetectingIcon] = useState(false)
   const iconInputRef = useRef<HTMLInputElement>(null)
 
@@ -427,6 +441,12 @@ export function InstanceDetail(): ReactNode {
 
   const savedWorlds = useMemo(() => worldsQuery.data ?? [], [worldsQuery.data])
 
+  const loaderVersionsQuery = useLoaderVersions(
+    editLoaderType,
+    editVersion,
+    activeTab === 'settings' && editLoaderType !== 'vanilla',
+  )
+
   useEffect(() => {
     if (instance) {
       setEditName(instance.name)
@@ -434,6 +454,13 @@ export function InstanceDetail(): ReactNode {
       setEditLoaderType(instance.loader.type)
       setEditLoaderVersion(instance.loader.version)
       setEditIconUrl(instance.iconUrl ?? null)
+      setEditMemoryOverride(instance.memory.overrideGlobal)
+      setEditMinMb(instance.memory.minMb ?? settingsQuery.data?.memory.defaultMinMb ?? 1024)
+      setEditMaxMb(instance.memory.maxMb ?? settingsQuery.data?.memory.defaultMaxMb ?? 4096)
+      setEditJavaMode(instance.java.mode)
+      setEditJavaPath(instance.java.path ?? '')
+      setEditJvmPreset(instance.jvmArgs.preset)
+      setEditJvmExtra(instance.jvmArgs.extra.join(' '))
     }
   }, [
     instance?.id,
@@ -442,6 +469,15 @@ export function InstanceDetail(): ReactNode {
     instance?.loader.type,
     instance?.loader.version,
     instance?.iconUrl,
+    instance?.memory.overrideGlobal,
+    instance?.memory.minMb,
+    instance?.memory.maxMb,
+    instance?.java.mode,
+    instance?.java.path,
+    instance?.jvmArgs.preset,
+    instance?.jvmArgs.extra,
+    settingsQuery.data?.memory.defaultMinMb,
+    settingsQuery.data?.memory.defaultMaxMb,
   ])
 
   const releases = useMemo(() => {
@@ -475,6 +511,41 @@ export function InstanceDetail(): ReactNode {
       { value: 'neoforge', label: 'NeoForge' },
     ],
     [],
+  )
+
+  const loaderVersionOptions: GlassSelectOption[] = useMemo(() => {
+    const opts: GlassSelectOption[] = [{ value: '', label: t('instance.loaderLatest') }]
+    for (const lv of loaderVersionsQuery.data ?? []) {
+      opts.push({
+        value: lv.version,
+        label: lv.stable ? lv.version : `${lv.version} (beta)`,
+      })
+    }
+    if (
+      editLoaderVersion &&
+      !opts.some((opt) => opt.value === editLoaderVersion)
+    ) {
+      opts.push({ value: editLoaderVersion, label: editLoaderVersion })
+    }
+    return opts
+  }, [editLoaderVersion, loaderVersionsQuery.data, t])
+
+  const javaModeOptions: GlassSelectOption[] = useMemo(
+    () => [
+      { value: 'auto', label: t('instance.javaAutoMode') },
+      { value: 'custom', label: t('instance.javaCustomMode') },
+    ],
+    [t],
+  )
+
+  const jvmPresetOptions: GlassSelectOption[] = useMemo(
+    () => [
+      { value: 'default', label: t('settings.jvmPresetDefault') },
+      { value: 'performance', label: t('settings.jvmPresetPerformance') },
+      { value: 'low-memory', label: t('settings.jvmPresetLowMemory') },
+      { value: 'custom', label: t('settings.jvmPresetCustom') },
+    ],
+    [t],
   )
 
   const resourcePackOptions: GlassSelectOption[] = useMemo(
@@ -599,6 +670,12 @@ export function InstanceDetail(): ReactNode {
       return
     }
     try {
+      const normalizedMin = Math.min(editMinMb, editMaxMb)
+      const parsedExtraArgs = editJvmExtra
+        .split(/\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+      const trimmedJavaPath = editJavaPath.trim()
       await updateInstance.mutateAsync({
         ...instance,
         name: editName.trim(),
@@ -607,6 +684,19 @@ export function InstanceDetail(): ReactNode {
         loader: {
           type: editLoaderType,
           version: editLoaderType === 'vanilla' ? null : editLoaderVersion,
+        },
+        memory: {
+          overrideGlobal: editMemoryOverride,
+          minMb: editMemoryOverride ? normalizedMin : null,
+          maxMb: editMemoryOverride ? editMaxMb : null,
+        },
+        java: {
+          mode: editJavaMode,
+          path: editJavaMode === 'custom' && trimmedJavaPath.length > 0 ? trimmedJavaPath : null,
+        },
+        jvmArgs: {
+          preset: editJvmPreset,
+          extra: parsedExtraArgs,
         },
       })
       pushToast(t('instance.saved'), 'info')
@@ -691,13 +781,6 @@ export function InstanceDetail(): ReactNode {
       onSuccess: () => {
         setDeleteOpen(false)
         pushToast(t('instances.deleted'))
-        if (deleteGameData) {
-          void invoke('downloads:cleanup', undefined)
-            .then(({ taskId }) => registerCleanupTask(taskId, t))
-            .catch((err: unknown) => {
-              pushToast(errorMessage(err, t('error.unknown')), 'error')
-            })
-        }
         navigate('/instances')
       },
       onError: (err) => {
@@ -2345,6 +2428,127 @@ export function InstanceDetail(): ReactNode {
               </div>
             </div>
 
+            {editLoaderType !== 'vanilla' ? (
+              <div className={styles.field}>
+                <label htmlFor="inst-edit-loader-version" className={styles.fieldLabel}>
+                  {t('instance.loaderVersion')}
+                </label>
+                <div style={{ maxWidth: '400px' }}>
+                  <GlassSelect
+                    id="inst-edit-loader-version"
+                    value={editLoaderVersion ?? ''}
+                    onValueChange={(val) => setEditLoaderVersion(val === '' ? null : val)}
+                    options={loaderVersionOptions}
+                    searchable
+                    testId="instance-edit-loader-version-select"
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            <div className={styles.field}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', maxWidth: '480px' }}>
+                <div>
+                  <span className={styles.fieldLabel}>{t('instance.memoryOverride')}</span>
+                  <p className={styles.rowHint}>{t('instance.memoryOverrideHint')}</p>
+                </div>
+                <GlassSwitch
+                  checked={editMemoryOverride}
+                  onCheckedChange={setEditMemoryOverride}
+                  label={t('instance.memoryOverride')}
+                />
+              </div>
+              {editMemoryOverride ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '480px', marginTop: '8px' }}>
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
+                      <span>{t('settings.memoryMax')}</span>
+                      <span>{editMaxMb} MB</span>
+                    </div>
+                    <GlassSlider
+                      value={editMaxMb}
+                      min={512}
+                      max={Math.max(1024, Math.min(memoryQuery.data?.totalMb ?? 16384, 32768))}
+                      step={256}
+                      label={t('settings.memoryMax')}
+                      onValueChange={(val) => {
+                        setEditMaxMb(val)
+                        if (editMinMb > val) setEditMinMb(val)
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
+                      <span>{t('settings.memoryMin')}</span>
+                      <span>{Math.min(editMinMb, editMaxMb)} MB</span>
+                    </div>
+                    <GlassSlider
+                      value={Math.min(editMinMb, editMaxMb)}
+                      min={512}
+                      max={Math.max(512, editMaxMb)}
+                      step={256}
+                      label={t('settings.memoryMin')}
+                      onValueChange={setEditMinMb}
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className={styles.field}>
+              <label htmlFor="inst-edit-java-mode" className={styles.fieldLabel}>
+                {t('instance.javaMode')}
+              </label>
+              <p className={styles.rowHint}>{t('instance.javaOverrideHint')}</p>
+              <div style={{ maxWidth: '400px' }}>
+                <GlassSelect
+                  id="inst-edit-java-mode"
+                  value={editJavaMode}
+                  onValueChange={(val) => setEditJavaMode(val as InstanceJavaMode)}
+                  options={javaModeOptions}
+                  testId="instance-edit-java-mode-select"
+                />
+              </div>
+              {editJavaMode === 'custom' ? (
+                <input
+                  id="inst-edit-java-path"
+                  type="text"
+                  className={styles.filterInput}
+                  style={{ paddingLeft: '10px', width: '100%', maxWidth: '480px', marginTop: '6px' }}
+                  value={editJavaPath}
+                  onChange={(e) => setEditJavaPath(e.target.value)}
+                  placeholder={t('settings.javaCustomPlaceholder')}
+                />
+              ) : null}
+            </div>
+
+            <div className={styles.field}>
+              <label htmlFor="inst-edit-jvm-preset" className={styles.fieldLabel}>
+                {t('instance.jvmPreset')}
+              </label>
+              <div style={{ maxWidth: '400px' }}>
+                <GlassSelect
+                  id="inst-edit-jvm-preset"
+                  value={editJvmPreset}
+                  onValueChange={(val) => setEditJvmPreset(val as JvmPreset)}
+                  options={jvmPresetOptions}
+                  testId="instance-edit-jvm-preset-select"
+                />
+              </div>
+              <label htmlFor="inst-edit-jvm-extra" className={styles.fieldLabel} style={{ marginTop: '8px' }}>
+                {t('instance.jvmExtra')}
+              </label>
+              <input
+                id="inst-edit-jvm-extra"
+                type="text"
+                className={styles.filterInput}
+                style={{ paddingLeft: '10px', width: '100%', maxWidth: '480px' }}
+                value={editJvmExtra}
+                onChange={(e) => setEditJvmExtra(e.target.value)}
+                placeholder={t('instance.jvmExtraPlaceholder')}
+              />
+            </div>
+
             <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
               <GlassButton
                 variant="primary"
@@ -2382,16 +2586,6 @@ export function InstanceDetail(): ReactNode {
           </>
         }
       >
-        <label className={styles.checkboxRow}>
-          <input
-            type="checkbox"
-            checked={deleteGameData}
-            disabled={removeInstance.isPending}
-            onChange={(e) => setDeleteGameData(e.target.checked)}
-          />
-          <span>{t('instances.deleteGameData')}</span>
-        </label>
-        <p className={styles.rowHint}>{t('instances.deleteGameDataHint')}</p>
         {instance.id === 'default' ? (
           <p className={styles.rowHint}>{t('instances.deleteDefaultNote')}</p>
         ) : null}

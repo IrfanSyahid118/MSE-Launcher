@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use launcher_security::validate_instance_id;
-use launcher_types::{CreateInstanceRequest, Instance, LauncherErrorPayload};
+use launcher_types::{CreateInstanceRequest, Instance, InstanceScreenshot, LauncherErrorPayload};
 use tauri_plugin_opener::OpenerExt;
 
 const ALLOWED_SUBFOLDERS: &[&str] = &[
@@ -86,4 +86,119 @@ pub fn instances_open_folder(
         })?;
 
     Ok(())
+}
+
+fn collect_instance_screenshots(
+    instances_dir: &std::path::Path,
+    inst: &Instance,
+    out: &mut Vec<(std::time::SystemTime, InstanceScreenshot)>,
+) {
+    if validate_instance_id(&inst.id).is_err() {
+        return;
+    }
+    let Ok(inst_dir) = launcher_security::safe_subpath(instances_dir, &inst.id) else {
+        return;
+    };
+    let screenshots_dir = inst_dir.join("minecraft").join("screenshots");
+    let no_symlink =
+        launcher_security::ensure_descendants_no_symlink(instances_dir, &screenshots_dir);
+    if no_symlink.is_err() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&screenshots_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let lower = file_name.to_ascii_lowercase();
+        if !lower.ends_with(".png") && !lower.ends_with(".jpg") && !lower.ends_with(".jpeg") {
+            continue;
+        }
+        let path = entry.path();
+        if launcher_security::ensure_descendants_no_symlink(&screenshots_dir, &path).is_err() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let modified_at = chrono::DateTime::<chrono::Utc>::from(modified).to_rfc3339();
+        out.push((
+            modified,
+            InstanceScreenshot {
+                instance_id: inst.id.clone(),
+                instance_name: inst.name.clone(),
+                file_name,
+                file_path: path.to_string_lossy().to_string(),
+                size_bytes: meta.len(),
+                modified_at,
+            },
+        ));
+    }
+}
+
+#[tauri::command]
+pub fn instances_list_screenshots(
+    state: tauri::State<AppState>,
+    instance_id: Option<String>,
+) -> Result<Vec<InstanceScreenshot>, LauncherErrorPayload> {
+    let target_instances: Vec<Instance> = if let Some(ref id) = instance_id {
+        validate_instance_id(id)?;
+        vec![state.instances.get(id)?]
+    } else {
+        state.instances.list()?
+    };
+
+    let mut collected: Vec<(std::time::SystemTime, InstanceScreenshot)> = Vec::new();
+    for inst in &target_instances {
+        collect_instance_screenshots(&state.paths.instances_dir, inst, &mut collected);
+    }
+
+    collected.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(collected.into_iter().map(|(_, item)| item).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_collect_instance_screenshots_filters_images_and_sorts_newest_first() {
+        let root = std::env::temp_dir().join(format!("mcl-ss-{}", uuid::Uuid::new_v4()));
+        let paths = launcher_platform::DataPaths::new(&root);
+        let store = launcher_storage::InstancesStore::new(paths.clone());
+        let inst = store
+            .create(CreateInstanceRequest {
+                name: "ShotTest".to_string(),
+                minecraft_version: "1.21.4".to_string(),
+                loader: launcher_types::LoaderSpec {
+                    loader_type: launcher_types::LoaderType::Vanilla,
+                    version: None,
+                },
+            })
+            .unwrap();
+
+        let ss_dir = paths
+            .instances_dir
+            .join(&inst.id)
+            .join("minecraft")
+            .join("screenshots");
+        std::fs::create_dir_all(&ss_dir).unwrap();
+        std::fs::write(ss_dir.join("first.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(ss_dir.join("ignore.txt"), b"not an image").unwrap();
+        std::fs::write(ss_dir.join("second.jpg"), b"\xff\xd8\xff").unwrap();
+
+        let mut collected = Vec::new();
+        collect_instance_screenshots(&paths.instances_dir, &inst, &mut collected);
+        assert_eq!(collected.len(), 2);
+        assert!(collected.iter().all(|(_, s)| s.file_name != "ignore.txt"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

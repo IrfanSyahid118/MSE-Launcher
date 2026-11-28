@@ -5,6 +5,40 @@
   width: 100%;
   overflow: hidden;
   background: var(--bg-solid);
+  padding: 20px 24px;
+  gap: 16px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pageTitle {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.subtitle {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  margin: 4px 0 0;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selectWrap {
+  min-width: 190px;
 }
 
 .container {
@@ -12,6 +46,91 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.scrollBody {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.countMeta {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 0 0 12px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  background: var(--surface-raised);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.14s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+}
+
+.thumbWrap {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cardMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+}
+
+.cardName {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardSub {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.lightbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-height: 70vh;
+}
+
+.lightboxImg {
+  max-width: 100%;
+  max-height: 68vh;
+  border-radius: var(--radius-md);
+  object-fit: contain;
 }
 
 .empty {
@@ -52,25 +171,6 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-tertiary);
-}
-
-.action {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 34px;
-  margin-top: 8px;
-  padding: 0 14px;
-  border-radius: var(--radius-control);
-  background: var(--surface-raised);
-  border: 1px solid var(--divider);
-  color: var(--text-primary);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.action:hover {
-  background: var(--surface-elevated);
 }
 
 .instanceHint {

@@ -31,6 +31,25 @@ pub struct ModpackInstallOptions {
     pub icon_url: Option<String>,
 }
 
+fn parse_modrinth_ids_from_url(raw_url: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(raw_url).ok()?;
+    if parsed.host_str() != Some("cdn.modrinth.com") {
+        return None;
+    }
+    let mut segs = parsed.path_segments()?;
+    if segs.next()? != "data" {
+        return None;
+    }
+    let project_id = segs.next()?.trim();
+    if segs.next()? != "versions" {
+        return None;
+    }
+    let version_id = segs.next()?.trim();
+    launcher_security::validate_safe_single_component(project_id).ok()?;
+    launcher_security::validate_safe_single_component(version_id).ok()?;
+    Some((project_id.to_string(), version_id.to_string()))
+}
+
 struct ResolvedModpackMeta {
     project_id: Option<String>,
     version_id: String,
@@ -842,10 +861,12 @@ where
                     None
                 };
                 if let Some(content_type) = content_type {
+                    let (entry_project_id, entry_version_id) = parse_modrinth_ids_from_url(url)
+                        .unwrap_or_else(|| (f.path.clone(), f.path.clone()));
                     entries.push(InstanceContentEntry {
                         provider: ContentProviderId::Modrinth,
-                        project_id: f.path.clone(),
-                        version_id: f.path.clone(),
+                        project_id: entry_project_id,
+                        version_id: entry_version_id,
                         content_type,
                         file_name: Path::new(&f.path)
                             .file_name()
@@ -1129,4 +1150,21 @@ where
     instance_guard.disarm();
 
     Ok(instance)
+}
+
+#[cfg(test)]
+mod modpack_url_tests {
+    use super::parse_modrinth_ids_from_url;
+
+    #[test]
+    fn test_parse_modrinth_ids_from_url() {
+        let parsed = parse_modrinth_ids_from_url(
+            "https://cdn.modrinth.com/data/AANobbMI/versions/5164628/sodium-fabric-0.5.8.jar",
+        );
+        assert_eq!(parsed, Some(("AANobbMI".to_string(), "5164628".to_string())));
+        assert_eq!(
+            parse_modrinth_ids_from_url("https://example.com/mod.jar"),
+            None
+        );
+    }
 }

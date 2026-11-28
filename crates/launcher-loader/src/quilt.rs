@@ -32,6 +32,7 @@ pub async fn fetch_quilt_loader_versions(
     http: &HttpClient,
     minecraft_version: &str,
 ) -> Result<Vec<LoaderVersionInfo>, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(minecraft_version)?;
     let url = format!("{}/{}", QUILT_META_URL, minecraft_version);
     let entries: Vec<QuiltLoaderEntry> = http.get_json(&url).await?;
 
@@ -49,6 +50,8 @@ pub async fn fetch_quilt_profile(
     minecraft_version: &str,
     loader_version: &str,
 ) -> Result<LoaderProfile, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(minecraft_version)?;
+    launcher_security::validate_safe_single_component(loader_version)?;
     let url = format!(
         "{}/{}/{}/profile/json",
         QUILT_META_URL, minecraft_version, loader_version

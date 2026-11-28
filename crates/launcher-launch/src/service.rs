@@ -225,6 +225,10 @@ impl LaunchService {
         self.running.read().await.contains_key(instance_id)
     }
 
+    pub async fn has_running_instances(&self) -> bool {
+        !self.running.read().await.is_empty()
+    }
+
     pub async fn kill(&self, instance_id: &str) -> Result<(), LauncherErrorPayload> {
         let slot = self.running.read().await.get(instance_id).cloned();
         match slot {
@@ -701,8 +705,8 @@ impl LaunchService {
         };
         vars.insert("user_type", user_type);
         vars.insert("user_properties", "{}");
-        vars.insert("launcher_name", "MCLauncher");
-        vars.insert("launcher_version", "0.1.0");
+        vars.insert("launcher_name", "MSE Launcher");
+        vars.insert("launcher_version", env!("CARGO_PKG_VERSION"));
         vars.insert("classpath", classpath_str.as_str());
         vars.insert("classpath_separator", CLASSPATH_SEPARATOR);
         let lib_dir_str = self.paths.libraries_dir.to_str().ok_or_else(|| {

@@ -137,9 +137,10 @@ pub fn close_running_launcher() {
     #[cfg(windows)]
     {
         let script = r#"
-$names = @('MSE Launcher', 'minecraft-launcher-desktop')
 for ($i = 0; $i -lt 10; $i++) {
-    $procs = Get-Process -Name $names -ErrorAction SilentlyContinue
+    $procs = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ProcessName -in @('MSE Launcher', 'minecraft-launcher-desktop') -or $_.ProcessName -like 'MSE.Launcher*'
+    }
     if (-not $procs) { break }
     if ($i -eq 0) {
         $procs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
@@ -211,110 +212,6 @@ $sc.Save()
     {
         let _ = (target_exe, shortcut_path, description);
         Ok(())
-    }
-}
-
-pub fn register_uninstall_entry(
-    install_dir: &Path,
-    exe_path: &Path,
-    uninstaller_path: &Path,
-    version: &str,
-    estimated_size_kb: u64,
-) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let uninstall_cmd = format!("\"{}\" --uninstall", uninstaller_path.display());
-        let script = r#"
-$regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MSELauncher'
-if (-not (Test-Path $regPath)) {
-    New-Item -Path $regPath -Force | Out-Null
-}
-New-ItemProperty -Path $regPath -Name 'DisplayName' -Value 'MSE Launcher' -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value $env:MSE_REG_VER -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'Publisher' -Value 'MSE Launcher Contributors' -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'InstallLocation' -Value $env:MSE_REG_DIR -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'DisplayIcon' -Value $env:MSE_REG_ICON -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'UninstallString' -Value $env:MSE_REG_UNINST -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'QuietUninstallString' -Value $env:MSE_REG_UNINST -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'EstimatedSize' -Value ([int]$env:MSE_REG_SIZE) -PropertyType DWord -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'NoModify' -Value 1 -PropertyType DWord -Force | Out-Null
-New-ItemProperty -Path $regPath -Name 'NoRepair' -Value 1 -PropertyType DWord -Force | Out-Null
-"#;
-        let status = std::process::Command::new("powershell.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .env("MSE_REG_VER", version)
-            .env("MSE_REG_DIR", install_dir)
-            .env("MSE_REG_ICON", exe_path)
-            .env("MSE_REG_UNINST", uninstall_cmd)
-            .env("MSE_REG_SIZE", estimated_size_kb.to_string())
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ])
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err("Failed to register uninstall entry".to_string());
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (
-            install_dir,
-            exe_path,
-            uninstaller_path,
-            version,
-            estimated_size_kb,
-        );
-        Ok(())
-    }
-}
-
-pub fn unregister_uninstall_entry() {
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("powershell.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "Remove-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MSELauncher' -Force -ErrorAction SilentlyContinue",
-            ])
-            .status();
-    }
-}
-
-pub fn read_registered_install_location() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        let output = std::process::Command::new("powershell.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MSELauncher' -ErrorAction SilentlyContinue).InstallLocation | ForEach-Object { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::Out.Write($_) }",
-            ])
-            .output()
-            .ok()?;
-        let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if val.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(val))
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        None
     }
 }
 

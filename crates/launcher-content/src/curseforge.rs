@@ -336,6 +336,7 @@ pub(crate) async fn get_curseforge_project_with_base(
     api_key: &str,
     project_id: &str,
 ) -> Result<ContentProject, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(project_id)?;
     let base = api_base.trim_end_matches('/');
     let mod_url = format!("{}/mods/{}", base, project_id);
     let desc_url = format!("{}/mods/{}/description", base, project_id);
@@ -402,6 +403,7 @@ pub(crate) async fn list_curseforge_versions_with_base(
     project_id: &str,
     filter: &ContentFilter,
 ) -> Result<Vec<CfFile>, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(project_id)?;
     let base = api_base.trim_end_matches('/');
     let mut url = Url::parse(&format!("{}/mods/{}/files", base, project_id))
         .map_err(|e| LauncherErrorPayload::internal(format!("Invalid URL: {}", e)))?;
@@ -439,6 +441,7 @@ pub(crate) async fn get_curseforge_file_with_base(
     project_id: &str,
     file_id: u64,
 ) -> Result<CfFile, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(project_id)?;
     let base = api_base.trim_end_matches('/');
     let url = format!("{}/mods/{}/files/{}", base, project_id, file_id);
     let file_res: CfFileResponse =
@@ -453,6 +456,7 @@ pub(crate) async fn get_curseforge_content_type_with_base(
     api_key: &str,
     project_id: &str,
 ) -> Result<ContentType, LauncherErrorPayload> {
+    launcher_security::validate_safe_single_component(project_id)?;
     let base = api_base.trim_end_matches('/');
     let url = format!("{}/mods/{}", base, project_id);
     let mod_res: CfModResponse =

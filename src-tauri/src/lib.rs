@@ -74,6 +74,7 @@ pub fn run() {
             commands::instances_update,
             commands::instances_remove,
             commands::instances_open_folder,
+            commands::instances_list_screenshots,
             commands::downloads_cleanup,
             commands::accounts_list,
             commands::accounts_set_active,

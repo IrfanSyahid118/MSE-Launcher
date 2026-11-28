@@ -211,32 +211,77 @@ pub fn validate_update_url(raw_url: &str) -> Result<url::Url, LauncherErrorPaylo
     Ok(parsed)
 }
 
+fn current_platform_key() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows-x86_64"
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        "macos-aarch64"
+    } else if cfg!(target_os = "macos") {
+        "macos-x86_64"
+    } else {
+        "linux-x86_64"
+    }
+}
+
 fn validate_asset_filename(asset_name: &str) -> Result<String, LauncherErrorPayload> {
     let trimmed = asset_name.trim();
     launcher_security::validate_single_filename(trimmed)?;
-    if !trimmed.to_ascii_lowercase().ends_with(".exe") {
-        return Err(LauncherErrorPayload::invalid_input(
-            "Berkas pembaruan Windows harus berekstensi .exe.",
-        ));
+    let lower = trimmed.to_ascii_lowercase();
+    #[cfg(windows)]
+    {
+        if !lower.ends_with(".exe") {
+            return Err(LauncherErrorPayload::invalid_input(
+                "Berkas pembaruan Windows harus berekstensi .exe.",
+            ));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let allowed = lower.ends_with(".appimage")
+            || lower.ends_with(".deb")
+            || lower.ends_with(".rpm")
+            || lower.ends_with(".tar.gz")
+            || lower.ends_with(".bin")
+            || lower.ends_with(".exe")
+            || !lower.contains('.');
+        if !allowed {
+            return Err(LauncherErrorPayload::invalid_input(
+                "Ekstensi berkas pembaruan tidak didukung.",
+            ));
+        }
     }
     Ok(trimmed.to_string())
 }
 
 fn select_github_asset(assets: &[GitHubAsset], mode: InstallMode) -> Option<&GitHubAsset> {
-    match mode {
-        InstallMode::Portable => assets.iter().find(|asset| {
-            let lower = asset.name.to_ascii_lowercase();
-            lower.contains("portable") && lower.ends_with(".exe")
-        }),
-        InstallMode::Installer => assets
-            .iter()
-            .find(|asset| asset.name.to_ascii_lowercase().ends_with("-setup.exe"))
-            .or_else(|| {
-                assets.iter().find(|asset| {
-                    let lower = asset.name.to_ascii_lowercase();
-                    lower.ends_with(".exe") && !lower.contains("portable")
-                })
+    #[cfg(windows)]
+    {
+        match mode {
+            InstallMode::Portable => assets.iter().find(|asset| {
+                let lower = asset.name.to_ascii_lowercase();
+                lower.contains("portable") && lower.ends_with(".exe")
             }),
+            InstallMode::Installer => assets
+                .iter()
+                .find(|asset| asset.name.to_ascii_lowercase().ends_with("-setup.exe"))
+                .or_else(|| {
+                    assets.iter().find(|asset| {
+                        let lower = asset.name.to_ascii_lowercase();
+                        lower.ends_with(".exe") && !lower.contains("portable")
+                    })
+                }),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = mode;
+        assets.iter().find(|asset| {
+            let lower = asset.name.to_ascii_lowercase();
+            lower.ends_with(".appimage")
+                || lower.ends_with(".deb")
+                || lower.ends_with(".rpm")
+                || lower.ends_with(".tar.gz")
+        })
     }
 }
 
@@ -245,7 +290,7 @@ fn parse_manifest_result(
     current_version: &str,
     install_mode: InstallMode,
 ) -> Option<UpdateCheckResult> {
-    let platform = manifest.platforms.as_ref()?.get("windows-x86_64")?;
+    let platform = manifest.platforms.as_ref()?.get(current_platform_key())?;
     let asset = match install_mode {
         InstallMode::Portable => platform.portable.as_ref(),
         InstallMode::Installer => platform.installer.as_ref(),
@@ -317,11 +362,24 @@ async fn try_fetch_latest_manifest(
 
 fn select_release(releases: &[GitHubRelease]) -> Option<&GitHubRelease> {
     let non_draft: Vec<&GitHubRelease> = releases.iter().filter(|r| !r.draft).collect();
-    non_draft
-        .iter()
-        .copied()
-        .find(|r| !r.prerelease)
-        .or_else(|| non_draft.first().copied())
+    let mut best: Option<&GitHubRelease> = None;
+    for cand in non_draft {
+        best = match best {
+            None => Some(cand),
+            Some(cur) => {
+                let cand_ver = cand.tag_name.trim_start_matches(['v', 'V']);
+                let cur_ver = cur.tag_name.trim_start_matches(['v', 'V']);
+                if is_newer_version(cur_ver, cand_ver)
+                    || (!is_newer_version(cand_ver, cur_ver) && cur.prerelease && !cand.prerelease)
+                {
+                    Some(cand)
+                } else {
+                    Some(cur)
+                }
+            }
+        };
+    }
+    best
 }
 
 fn parse_sha256_from_checksum_text(text: &str, asset_name: &str) -> Option<String> {
@@ -474,7 +532,9 @@ async fn try_fetch_any_verified_manifest(
     install_mode: InstallMode,
 ) -> Option<UpdateCheckResult> {
     if let Some(latest) = try_fetch_latest_manifest(http, current_version, install_mode).await {
-        return Some(latest);
+        if latest.update_available && latest.download_url.is_some() {
+            return Some(latest);
+        }
     }
     let resp = http
         .request(reqwest::Method::GET, RELEASES_API_URL)
@@ -510,14 +570,11 @@ pub async fn updater_check(
     let install_mode = detect_current_install_mode();
     let http = HttpClient::new();
 
-    if let Some(manifest_res) =
-        try_fetch_latest_manifest(&http, &current_version, install_mode).await
-    {
-        if manifest_res.download_url.is_some()
-            || !is_newer_version(&current_version, &manifest_res.latest_version)
-        {
+    let latest_manifest = try_fetch_latest_manifest(&http, &current_version, install_mode).await;
+    if let Some(ref manifest_res) = latest_manifest {
+        if manifest_res.update_available && manifest_res.download_url.is_some() {
             *state.verified_update.write().await = Some(manifest_res.clone());
-            return Ok(manifest_res);
+            return Ok(manifest_res.clone());
         }
     }
 
@@ -534,6 +591,10 @@ pub async fn updater_check(
 
     let status = resp.status();
     if status.as_u16() == 404 {
+        if let Some(manifest_res) = latest_manifest {
+            *state.verified_update.write().await = Some(manifest_res.clone());
+            return Ok(manifest_res);
+        }
         return Ok(UpdateCheckResult {
             current_version: current_version.clone(),
             latest_version: current_version,
@@ -558,6 +619,10 @@ pub async fn updater_check(
     })?;
 
     let Some(release) = select_release(&releases) else {
+        if let Some(manifest_res) = latest_manifest {
+            *state.verified_update.write().await = Some(manifest_res.clone());
+            return Ok(manifest_res);
+        }
         return Ok(UpdateCheckResult {
             current_version: current_version.clone(),
             latest_version: current_version,
@@ -1003,7 +1068,7 @@ mod tests {
             version: "1.1.0-beta".to_string(),
             notes: None,
             platforms: Some(std::collections::HashMap::from([(
-                "windows-x86_64".to_string(),
+                current_platform_key().to_string(),
                 PlatformManifest {
                     installer: Some(ManifestAsset {
                         name: "MSE.Launcher_1.1.0-beta_x64-setup.exe".to_string(),
@@ -1019,6 +1084,27 @@ mod tests {
             .expect("manifest should parse");
         assert!(parsed.update_available);
         assert!(parsed.sha256.is_some());
+    }
+
+    #[test]
+    fn test_select_release_prefers_higher_semver_even_when_prerelease() {
+        let older_stable = GitHubRelease {
+            tag_name: "v1.0.0".to_string(),
+            draft: false,
+            prerelease: false,
+            body: None,
+            assets: vec![],
+        };
+        let newer_beta = GitHubRelease {
+            tag_name: "v1.2.2-beta".to_string(),
+            draft: false,
+            prerelease: true,
+            body: None,
+            assets: vec![],
+        };
+        let list = [older_stable, newer_beta];
+        let picked = select_release(&list).expect("should select highest semver release");
+        assert_eq!(picked.tag_name, "v1.2.2-beta");
     }
 
     #[test]
