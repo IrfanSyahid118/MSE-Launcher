@@ -986,22 +986,24 @@ impl ContentService {
             .collect();
 
         let results: Vec<Option<ContentUpdateInfo>> = stream::iter(candidates)
-            .map(|(provider, project_id, current_version_id, filter)| async move {
-                let versions = self.versions(provider, &project_id, filter).await.ok()?;
-                let latest = versions.first()?;
-                if latest.id != current_version_id {
-                    Some(ContentUpdateInfo {
-                        provider,
-                        project_id,
-                        current_version_id,
-                        latest_version_id: latest.id.clone(),
-                        latest_version_number: latest.version_number.clone(),
-                        file_name: latest.file_name.clone(),
-                    })
-                } else {
-                    None
-                }
-            })
+            .map(
+                |(provider, project_id, current_version_id, filter)| async move {
+                    let versions = self.versions(provider, &project_id, filter).await.ok()?;
+                    let latest = versions.first()?;
+                    if latest.id != current_version_id {
+                        Some(ContentUpdateInfo {
+                            provider,
+                            project_id,
+                            current_version_id,
+                            latest_version_id: latest.id.clone(),
+                            latest_version_number: latest.version_number.clone(),
+                            file_name: latest.file_name.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                },
+            )
             .buffer_unordered(6)
             .collect()
             .await;

@@ -1161,7 +1161,10 @@ mod modpack_url_tests {
         let parsed = parse_modrinth_ids_from_url(
             "https://cdn.modrinth.com/data/AANobbMI/versions/5164628/sodium-fabric-0.5.8.jar",
         );
-        assert_eq!(parsed, Some(("AANobbMI".to_string(), "5164628".to_string())));
+        assert_eq!(
+            parsed,
+            Some(("AANobbMI".to_string(), "5164628".to_string()))
+        );
         assert_eq!(
             parse_modrinth_ids_from_url("https://example.com/mod.jar"),
             None
