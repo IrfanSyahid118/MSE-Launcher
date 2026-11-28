@@ -29,7 +29,8 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libasound2-dev
+            libasound2-dev \
+            xdg-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -68,3 +69,63 @@ jobs:
 
       - name: Run Rust workspace tests
         run: cargo test --workspace
+
+      - name: Build Windows app and installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MCLAUNCHER_DEFAULT_CF_PROXY: ${{ secrets.MCLAUNCHER_DEFAULT_CF_PROXY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pnpm build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --release -p launcher-installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $cargoMatch = Select-String -Path 'Cargo.toml' -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $appVersion = $cargoMatch.Matches[0].Groups[1].Value.Trim()
+          $outDir = Join-Path $PWD 'ci-artifacts/windows'
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+          $msiFile = Get-ChildItem -Path 'target/release/bundle/msi' -Filter '*.msi' | Select-Object -First 1
+          $portableSrc = Get-Item 'target/release/minecraft-launcher-desktop.exe'
+          $installerStub = Get-Item 'target/release/launcher-installer.exe'
+
+          if (-not $msiFile -or -not $portableSrc -or -not $installerStub) {
+            throw 'Expected Windows Tauri build artifacts were not found.'
+          }
+
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File 'scripts/package-installer.ps1' `
+            -StubExe $installerStub.FullName `
+            -AppExe $portableSrc.FullName `
+            -Version $appVersion `
+            -OutExe (Join-Path $outDir "MSE.Launcher_${appVersion}_x64-setup.exe")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Copy-Item $msiFile.FullName (Join-Path $outDir "MSE.Launcher_${appVersion}_x64_en-US.msi") -Force
+          Copy-Item $portableSrc.FullName (Join-Path $outDir "MSE.Launcher_${appVersion}_Portable.exe") -Force
+
+      - name: Build Ubuntu app and bundles
+        if: runner.os == 'Linux'
+        env:
+          MCLAUNCHER_DEFAULT_CF_PROXY: ${{ secrets.MCLAUNCHER_DEFAULT_CF_PROXY }}
+          NO_STRIP: "true"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          pnpm exec tauri build --bundles deb,appimage
+          APP_VER="$(grep -m1 -E '^\s*version\s*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          mkdir -p ci-artifacts/ubuntu
+          DEB_FILE="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' | head -n1)"
+          APPIMAGE_FILE="$(find target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -n1)"
+          BIN_FILE="target/release/minecraft-launcher-desktop"
+          test -n "$DEB_FILE" && cp "$DEB_FILE" "ci-artifacts/ubuntu/MSE.Launcher_${APP_VER}_amd64.deb"
+          test -n "$APPIMAGE_FILE" && cp "$APPIMAGE_FILE" "ci-artifacts/ubuntu/MSE.Launcher_${APP_VER}_amd64.AppImage"
+          test -f "$BIN_FILE" && tar -czf "ci-artifacts/ubuntu/MSE.Launcher_${APP_VER}_linux-x86_64.tar.gz" -C target/release minecraft-launcher-desktop
+
+      - name: Upload built app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build-${{ runner.os }}
+          path: ci-artifacts/
+          retention-days: 7

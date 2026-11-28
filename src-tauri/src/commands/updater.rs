@@ -784,6 +784,15 @@ fn apply_downloaded_update(
     _current_exe: Option<&Path>,
     _can_replace_in_place: bool,
 ) -> Result<(), LauncherErrorPayload> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(destination) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(destination, perms);
+        }
+    }
     std::process::Command::new(destination)
         .spawn()
         .map_err(|e| {
