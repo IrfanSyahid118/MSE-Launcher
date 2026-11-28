@@ -160,7 +160,7 @@ pub fn instances_list_screenshots(
         collect_instance_screenshots(&state.paths.instances_dir, inst, &mut collected);
     }
 
-    collected.sort_by(|a, b| b.0.cmp(&a.0));
+    collected.sort_by_key(|a| std::cmp::Reverse(a.0));
     Ok(collected.into_iter().map(|(_, item)| item).collect())
 }
 
